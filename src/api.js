@@ -1,4 +1,14 @@
-const DEFAULT_BASE_URL = process.env.FRP_BASE_URL || 'https://frp.80cn.cn/api';
+const DEFAULT_BASE_URL = 'https://frp.80cn.cn/api';
+
+function normalizeBaseUrl(url) {
+  if (!url || typeof url !== 'string') return DEFAULT_BASE_URL;
+  const trimmed = url.trim();
+  if (!trimmed) return DEFAULT_BASE_URL;
+  if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
+    return DEFAULT_BASE_URL;
+  }
+  return trimmed.replace(/\/api\/?$/, '').replace(/\/$/, '') + '/api';
+}
 
 function extractMessage(payload, fallback = '请求失败') {
   if (typeof payload === 'string') return payload;
@@ -24,12 +34,12 @@ function isPayloadFailure(payload) {
 }
 
 class FrpApiClient {
-  constructor({ baseUrl = DEFAULT_BASE_URL, fetchImpl = global.fetch } = {}) {
+  constructor({ baseUrl, fetchImpl = global.fetch } = {}) {
     if (typeof fetchImpl !== 'function') {
       throw new Error('当前 Node 环境没有 fetch，请使用 Node.js 20+');
     }
 
-    this.baseUrl = baseUrl.replace(/\/$/, '');
+    this.baseUrl = normalizeBaseUrl(baseUrl || process.env.FRP_BASE_URL).replace(/\/$/, '');
     this.fetchImpl = fetchImpl;
     this.token = '';
   }
