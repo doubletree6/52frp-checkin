@@ -4,18 +4,10 @@
 
 目标站点：<https://frp.80cn.cn/user/#/auth/login>
 
-## 这个版本和参考项目的区别
-
-参考项目 `Jiaoyuelian-autocheckin` 需要 Puppeteer + OpenCV 处理图片滑块。
-
-52frp 这套前端我已经按页面逻辑拆过了，登录页的滑块是前端拖拽校验，不是图片验证码。真正的签到流程是：
-
 1. `POST /api/user/login` 登录
 2. `GET /api/user/sign/info` 读取今日签到状态
 3. `GET /api/user/slider-token` 获取签到 token
 4. `POST /api/user/sign` 完成签到
-
-所以这个项目不需要浏览器，也不需要 OpenCV，跑在 GitHub Actions 里会更稳。
 
 ## 功能
 
@@ -111,10 +103,6 @@ CHECKIN_RESULT: 今天已经签到过了，累计签到 12 天，可用流量 5.
 ```bash
 npm test
 ```
-
-## 备注
-
-如果后面 52frp 改了接口结构，只需要调整 `src/api.js` 和 `src/core.js`，不需要回到浏览器自动化那条重路。
 
 ## License
 
