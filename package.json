@@ -1,0 +1,14 @@
+{
+  "name": "52frp-checkin",
+  "version": "1.0.0",
+  "description": "GitHub Actions based automatic daily check-in for 52frp",
+  "main": "checkin.js",
+  "scripts": {
+    "test": "node --test",
+    "checkin": "node checkin.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

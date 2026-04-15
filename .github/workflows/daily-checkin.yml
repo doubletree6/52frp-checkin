@@ -1,0 +1,57 @@
+name: Daily 52frp Check-in
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '10 2 * * *'
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run check-in
+        id: checkin
+        env:
+          FRP_USERNAME: ${{ secrets.FRP_USERNAME }}
+          FRP_PASSWORD: ${{ secrets.FRP_PASSWORD }}
+          FRP_BASE_URL: ${{ secrets.FRP_BASE_URL }}
+        run: |
+          set +e
+          output=$(node checkin.js 2>&1)
+          status=$?
+          set -e
+
+          echo "$output"
+
+          result=$(printf '%s\n' "$output" | sed -n 's/^CHECKIN_RESULT: //p' | tail -n 1)
+          if [ -z "$result" ]; then
+            result="签到脚本执行完成，但未解析到结果"
+          fi
+
+          {
+            echo "checkin_result<<EOF"
+            echo "$result"
+            echo "EOF"
+            echo "exit_code=$status"
+          } >> "$GITHUB_OUTPUT"
+
+          exit $status
+
+      - name: PushPlus notification
+        if: always()
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+        run: node push_notification.js "${{ steps.checkin.outputs.checkin_result }}"
