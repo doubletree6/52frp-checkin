@@ -108,29 +108,40 @@ function formatBytes(bytes) {
   return `${value.toFixed(0)} B`;
 }
 
-function buildAlreadySignedMessage(info, userInfo) {
-  const parts = [];
+// 紧凑格式，无空格
+function formatBytesCompact(bytes) {
+  const value = toNumber(bytes, 0);
 
-  if (info.totalSignDays > 0) parts.push(`累签:${info.totalSignDays} 天`);
+  if (value >= 1024 ** 4) return `${(value / 1024 ** 4).toFixed(2)}TB`;
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)}GB`;
+  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(2)}MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(2)}KB`;
+  return `${value.toFixed(0)}B`;
+}
+
+function buildAlreadySignedMessage(info, userInfo) {
+  const parts = ['frp'];
+
+  if (info.totalSignDays > 0) parts.push(`签${info.totalSignDays}`);
   const rewardBytes = info.totalTrafficBytes || 0;
-  if (rewardBytes > 0) parts.push(`获得:${formatBytes(rewardBytes)}`);
+  if (rewardBytes > 0) parts.push(`得${formatBytesCompact(rewardBytes)}`);
   if (userInfo && userInfo.remainingTrafficBytes > 0) {
-    parts.push(`剩余:${formatBytes(userInfo.remainingTrafficBytes)}`);
+    parts.push(`余${formatBytesCompact(userInfo.remainingTrafficBytes)}`);
   }
 
-  return parts.join('|') || '今天已经签到过了';
+  return parts.join('') || '今天已经签到过了';
 }
 
 function buildSuccessMessage(info, rewardBytes, userInfo) {
-  const parts = [];
+  const parts = ['frp'];
 
-  if (info.totalSignDays > 0) parts.push(`累签:${info.totalSignDays} 天`);
-  if (rewardBytes > 0) parts.push(`获得:${formatBytes(rewardBytes)}`);
+  if (info.totalSignDays > 0) parts.push(`签${info.totalSignDays}`);
+  if (rewardBytes > 0) parts.push(`得${formatBytesCompact(rewardBytes)}`);
   if (userInfo && userInfo.remainingTrafficBytes > 0) {
-    parts.push(`剩余:${formatBytes(userInfo.remainingTrafficBytes)}`);
+    parts.push(`余${formatBytesCompact(userInfo.remainingTrafficBytes)}`);
   }
 
-  return parts.join('|') || '签到成功';
+  return parts.join('') || '签到成功';
 }
 
 async function runCheckIn(api, credentials) {
@@ -204,6 +215,7 @@ module.exports = {
   extractRewardBytes,
   extractSliderToken,
   formatBytes,
+  formatBytesCompact,
   normalizeSignInfo,
   normalizeUserInfo,
   runCheckIn,

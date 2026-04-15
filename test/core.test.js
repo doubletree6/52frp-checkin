@@ -115,9 +115,9 @@ test('runCheckIn short-circuits when already signed today', async () => {
   const result = await runCheckIn(api, { username: 'user', password: 'pass' });
 
   assert.equal(result.status, 'already_signed');
-  assert.match(result.message, /累签:12 天/);
-  assert.match(result.message, /获得:5.00 GB/);
-  assert.match(result.message, /剩余:99\.99 GB/);
+  assert.match(result.message, /frp签12/);
+  assert.match(result.message, /得5\.00GB/);
+  assert.match(result.message, /余99\.99GB/);
   assert.deepEqual(calls, [
     ['login', { username: 'user', password: 'pass' }],
     ['setToken', 'token-1'],
@@ -188,9 +188,9 @@ test('runCheckIn completes the sign flow and reports success details', async () 
   const result = await runCheckIn(api, { username: 'user', password: 'pass' });
 
   assert.equal(result.status, 'success');
-  assert.match(result.message, /累签:5 天/);
-  assert.match(result.message, /获得:2.00 GB/);
-  assert.match(result.message, /剩余:99\.99 GB/);
+  assert.match(result.message, /frp签5/);
+  assert.match(result.message, /得2\.00GB/);
+  assert.match(result.message, /余99\.99GB/);
 });
 
 test('runCheckIn fails fast when login token is missing', async () => {
