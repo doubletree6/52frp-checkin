@@ -14,7 +14,7 @@ async function sendNotification(message) {
     },
     body: JSON.stringify({
       token,
-      title: `52frp 签到：${message}`,
+      title: `52frp:${message}`,
       content: message,
     }),
   });
