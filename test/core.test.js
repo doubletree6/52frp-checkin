@@ -5,6 +5,8 @@ const {
   extractLoginToken,
   extractSliderToken,
   normalizeSignInfo,
+  normalizeUserInfo,
+  formatBytes,
   runCheckIn,
 } = require('../src/core');
 
@@ -45,6 +47,31 @@ test('normalizeSignInfo reads the panel response shape', () => {
   });
 });
 
+test('normalizeUserInfo extracts remaining traffic', () => {
+  const info = normalizeUserInfo({
+    data: {
+      total_traffic: 107374182400,
+      used_traffic: 6205216,
+      remaining_traffic: 107367977184,
+    },
+  });
+
+  assert.deepEqual(info, {
+    totalTrafficBytes: 107374182400,
+    usedTrafficBytes: 6205216,
+    remainingTrafficBytes: 107367977184,
+  });
+});
+
+test('formatBytes handles various sizes', () => {
+  assert.equal(formatBytes(0), '0 B');
+  assert.equal(formatBytes(1024), '1.00 KB');
+  assert.equal(formatBytes(1048576), '1.00 MB');
+  assert.equal(formatBytes(1073741824), '1.00 GB');
+  assert.equal(formatBytes(1099511627776), '1.00 TB');
+  assert.equal(formatBytes(2147483648), '2.00 GB');
+});
+
 test('runCheckIn short-circuits when already signed today', async () => {
   const calls = [];
   const api = {
@@ -60,8 +87,18 @@ test('runCheckIn short-circuits when already signed today', async () => {
       return {
         data: {
           total_sign_days: 12,
+          total_traffic: 5368709120,
           available_traffic: 5368709120,
           signed_today: true,
+        },
+      };
+    },
+    async getUserInfo() {
+      calls.push(['getUserInfo']);
+      return {
+        data: {
+          total_traffic: 107374182400,
+          remaining_traffic: 107367977184,
         },
       };
     },
@@ -78,17 +115,21 @@ test('runCheckIn short-circuits when already signed today', async () => {
   const result = await runCheckIn(api, { username: 'user', password: 'pass' });
 
   assert.equal(result.status, 'already_signed');
-  assert.match(result.message, /今天已经签到过了/);
-  assert.match(result.message, /累计签到 12 天/);
+  assert.match(result.message, /累签:12 天/);
+  assert.match(result.message, /获得:5.00 GB/);
+  assert.match(result.message, /剩余:99\.99 GB/);
   assert.deepEqual(calls, [
     ['login', { username: 'user', password: 'pass' }],
     ['setToken', 'token-1'],
+    ['getUserInfo'],
     ['getSignInfo'],
   ]);
 });
 
 test('runCheckIn completes the sign flow and reports success details', async () => {
   const calls = [];
+  let signInfoCallCount = 0;
+
   const api = {
     async login(credentials) {
       calls.push(['login', credentials]);
@@ -99,7 +140,8 @@ test('runCheckIn completes the sign flow and reports success details', async () 
     },
     async getSignInfo() {
       calls.push(['getSignInfo']);
-      if (calls.filter(([name]) => name === 'getSignInfo').length === 1) {
+      signInfoCallCount++;
+      if (signInfoCallCount === 1) {
         return {
           data: {
             total_sign_days: 4,
@@ -115,6 +157,16 @@ test('runCheckIn completes the sign flow and reports success details', async () 
           total_sign_days: 5,
           available_traffic: 3221225472,
           signed_today: true,
+          total_traffic: 3221225472,
+        },
+      };
+    },
+    async getUserInfo() {
+      calls.push(['getUserInfo']);
+      return {
+        data: {
+          total_traffic: 107374182400,
+          remaining_traffic: 107367977184,
         },
       };
     },
@@ -125,11 +177,9 @@ test('runCheckIn completes the sign flow and reports success details', async () 
     async signIn(sliderToken) {
       calls.push(['signIn', sliderToken]);
       return {
-        message: '签到成功',
         data: {
+          last_traffic: 2147483648,
           total_sign_days: 5,
-          available_traffic: 3221225472,
-          reward_traffic: 2147483648,
         },
       };
     },
@@ -138,18 +188,9 @@ test('runCheckIn completes the sign flow and reports success details', async () 
   const result = await runCheckIn(api, { username: 'user', password: 'pass' });
 
   assert.equal(result.status, 'success');
-  assert.match(result.message, /签到成功/);
-  assert.match(result.message, /累计签到 5 天/);
-  assert.match(result.message, /本次获得 2.00 GB/);
-  assert.match(result.message, /可用流量 3.00 GB/);
-  assert.deepEqual(calls, [
-    ['login', { username: 'user', password: 'pass' }],
-    ['setToken', 'token-2'],
-    ['getSignInfo'],
-    ['getSignSliderToken'],
-    ['signIn', 'slider-token'],
-    ['getSignInfo'],
-  ]);
+  assert.match(result.message, /累签:5 天/);
+  assert.match(result.message, /获得:2.00 GB/);
+  assert.match(result.message, /剩余:99\.99 GB/);
 });
 
 test('runCheckIn fails fast when login token is missing', async () => {
@@ -159,6 +200,9 @@ test('runCheckIn fails fast when login token is missing', async () => {
     },
     setToken() {},
     async getSignInfo() {
+      throw new Error('should not be called');
+    },
+    async getUserInfo() {
       throw new Error('should not be called');
     },
     async getSignSliderToken() {

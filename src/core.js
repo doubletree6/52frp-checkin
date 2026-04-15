@@ -74,16 +74,26 @@ function normalizeSignInfo(payload) {
   };
 }
 
+function normalizeUserInfo(payload) {
+  const root = unwrapData(payload);
+  const data = unwrapData(root) || {};
+
+  // 优先从 traffic 对象获取
+  const traffic = data.traffic || {};
+
+  return {
+    totalTrafficBytes: toNumber(traffic.total ?? data.total_traffic ?? data.traffic, 0),
+    usedTrafficBytes: toNumber(traffic.total_used ?? data.used_traffic, 0),
+    remainingTrafficBytes: toNumber(traffic.total_remaining ?? data.remaining_traffic, 0),
+  };
+}
+
 function extractRewardBytes(payload) {
   const root = unwrapData(payload);
   const data = unwrapData(root) || {};
 
   return toNumber(
-    data.reward_traffic ??
-      data.traffic_reward ??
-      data.sign_reward_traffic ??
-      data.sign_traffic ??
-      data.traffic_bytes,
+    data.reward_traffic ?? data.traffic_reward ?? data.sign_reward_traffic ?? data.sign_traffic ?? data.traffic_bytes ?? data.last_traffic,
     0
   );
 }
@@ -98,28 +108,29 @@ function formatBytes(bytes) {
   return `${value.toFixed(0)} B`;
 }
 
-function buildAlreadySignedMessage(info) {
-  const parts = ['今天已经签到过了'];
+function buildAlreadySignedMessage(info, userInfo) {
+  const parts = [];
 
-  if (info.totalSignDays > 0) parts.push(`累计签到 ${info.totalSignDays} 天`);
-  if (info.availableTrafficBytes > 0) {
-    parts.push(`可用流量 ${formatBytes(info.availableTrafficBytes)}`);
+  if (info.totalSignDays > 0) parts.push(`累签:${info.totalSignDays} 天`);
+  const rewardBytes = info.totalTrafficBytes || 0;
+  if (rewardBytes > 0) parts.push(`获得:${formatBytes(rewardBytes)}`);
+  if (userInfo && userInfo.remainingTrafficBytes > 0) {
+    parts.push(`剩余:${formatBytes(userInfo.remainingTrafficBytes)}`);
   }
 
-  return parts.join('，');
+  return parts.join('|') || '今天已经签到过了';
 }
 
-function buildSuccessMessage(signResponse, info, rewardBytes) {
-  const message = extractMessage(signResponse, '签到成功');
-  const parts = [message];
+function buildSuccessMessage(info, rewardBytes, userInfo) {
+  const parts = [];
 
-  if (info.totalSignDays > 0) parts.push(`累计签到 ${info.totalSignDays} 天`);
-  if (rewardBytes > 0) parts.push(`本次获得 ${formatBytes(rewardBytes)}`);
-  if (info.availableTrafficBytes > 0) {
-    parts.push(`可用流量 ${formatBytes(info.availableTrafficBytes)}`);
+  if (info.totalSignDays > 0) parts.push(`累签:${info.totalSignDays} 天`);
+  if (rewardBytes > 0) parts.push(`获得:${formatBytes(rewardBytes)}`);
+  if (userInfo && userInfo.remainingTrafficBytes > 0) {
+    parts.push(`剩余:${formatBytes(userInfo.remainingTrafficBytes)}`);
   }
 
-  return parts.join('，');
+  return parts.join('|') || '签到成功';
 }
 
 async function runCheckIn(api, credentials) {
@@ -134,12 +145,20 @@ async function runCheckIn(api, credentials) {
     api.setToken(authToken);
   }
 
+  // 获取账户流量信息
+  let userInfo = null;
+  try {
+    userInfo = normalizeUserInfo(await api.getUserInfo());
+  } catch {
+    userInfo = null;
+  }
+
   const beforeInfo = normalizeSignInfo(await api.getSignInfo());
   if (beforeInfo.signedToday) {
     return {
       status: 'already_signed',
-      message: buildAlreadySignedMessage(beforeInfo),
-      details: beforeInfo,
+      message: buildAlreadySignedMessage(beforeInfo, userInfo),
+      details: { ...beforeInfo, userInfo },
     };
   }
 
@@ -159,14 +178,22 @@ async function runCheckIn(api, credentials) {
     finalInfo = beforeInfo;
   }
 
-  const rewardBytes = extractRewardBytes(signResponse);
+  // 重新获取账户流量信息
+  try {
+    userInfo = normalizeUserInfo(await api.getUserInfo());
+  } catch {
+    // 保持之前的信息
+  }
+
+  const rewardBytes = extractRewardBytes(signResponse) || signResponse?.data?.last_traffic || 0;
 
   return {
     status: 'success',
-    message: buildSuccessMessage(signResponse, finalInfo, rewardBytes),
+    message: buildSuccessMessage(finalInfo, rewardBytes, userInfo),
     details: {
       ...finalInfo,
       rewardBytes,
+      userInfo,
     },
   };
 }
@@ -178,5 +205,6 @@ module.exports = {
   extractSliderToken,
   formatBytes,
   normalizeSignInfo,
+  normalizeUserInfo,
   runCheckIn,
 };

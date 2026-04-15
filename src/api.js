@@ -114,6 +114,10 @@ class FrpApiClient {
       body: { slider_token: sliderToken },
     });
   }
+
+  getUserInfo() {
+    return this.request('GET', 'user/info');
+  }
 }
 
 module.exports = {
