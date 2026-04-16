@@ -3,7 +3,7 @@ name: Daily 52frp Check-in
 on:
   workflow_dispatch:
   schedule:
-    - cron: '10 2 * * *'
+    - cron: '46 10 * * *'
 
 jobs:
   checkin:
