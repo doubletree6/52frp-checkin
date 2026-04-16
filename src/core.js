@@ -26,6 +26,12 @@ function extractMessage(payload, fallback = '') {
   );
 }
 
+function isRateLimited(payload) {
+  const msg = extractMessage(payload, '');
+  const status = payload?.status || payload?.data?.status || 0;
+  return status === 429 || msg.includes('次数已达上限') || msg.includes('请明天再试');
+}
+
 function extractLoginToken(payload) {
   const root = unwrapData(payload);
   const nested = unwrapData(root);
@@ -181,6 +187,12 @@ async function runCheckIn(api, credentials) {
   }
 
   const signResponse = await api.signIn(sliderToken);
+
+  // 检查频率限制
+  if (isRateLimited(signResponse)) {
+    throw new Error('今日签到尝试次数已达上限，请明天再试');
+  }
+
   let finalInfo = beforeInfo;
 
   try {
@@ -216,6 +228,7 @@ module.exports = {
   extractSliderToken,
   formatBytes,
   formatBytesCompact,
+  isRateLimited,
   normalizeSignInfo,
   normalizeUserInfo,
   runCheckIn,
