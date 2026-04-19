@@ -59,6 +59,7 @@ class FrpApiClient {
     this.baseUrl = normalizeBaseUrl(baseUrl || process.env.FRP_BASE_URL).replace(/\/$/, '');
     this.fetchImpl = fetchImpl;
     this.token = '';
+    this.cookies = new Map();
   }
 
   setToken(token) {
@@ -67,6 +68,12 @@ class FrpApiClient {
 
   buildUrl(path) {
     return `${this.baseUrl}/${String(path || '').replace(/^\/+/, '')}`;
+  }
+
+  buildPanelUrl(path = '') {
+    const panelBase = new URL('/user/', this.baseUrl);
+    if (!path) return panelBase.toString();
+    return new URL(String(path || '').replace(/^\/+/, ''), panelBase).toString();
   }
 
   buildHeaders(extraHeaders = {}) {
@@ -79,7 +86,40 @@ class FrpApiClient {
       headers.Authorization = `Bearer ${this.token}`;
     }
 
+    if (this.cookies.size > 0) {
+      headers.Cookie = Array.from(this.cookies.entries())
+        .map(([name, value]) => `${name}=${value}`)
+        .join('; ');
+    }
+
     return headers;
+  }
+
+  storeCookies(headers) {
+    if (!headers) return;
+
+    let setCookies = [];
+
+    if (typeof headers.getSetCookie === 'function') {
+      setCookies = headers.getSetCookie();
+    } else if (typeof headers.raw === 'function') {
+      setCookies = headers.raw()['set-cookie'] || [];
+    } else if (typeof headers.get === 'function') {
+      const single = headers.get('set-cookie');
+      if (single) setCookies = [single];
+    }
+
+    for (const cookieLine of setCookies) {
+      const pair = String(cookieLine || '').split(';', 1)[0];
+      const eqIndex = pair.indexOf('=');
+      if (eqIndex <= 0) continue;
+
+      const name = pair.slice(0, eqIndex).trim();
+      const value = pair.slice(eqIndex + 1).trim();
+      if (!name) continue;
+
+      this.cookies.set(name, value);
+    }
   }
 
   async request(method, path, { body, headers } = {}) {
@@ -94,6 +134,7 @@ class FrpApiClient {
     }
 
     const response = await this.fetchImpl(this.buildUrl(path), init);
+    this.storeCookies(response.headers);
     const rawText = await response.text();
 
     let payload = rawText;
@@ -112,7 +153,26 @@ class FrpApiClient {
     return payload;
   }
 
-  login({ username, password }) {
+  async primeSession() {
+    const response = await this.fetchImpl(this.buildPanelUrl(), {
+      method: 'GET',
+      headers: this.buildHeaders({
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      }),
+    });
+
+    this.storeCookies(response.headers);
+
+    if (typeof response.text === 'function') {
+      await response.text();
+    }
+  }
+
+  async login({ username, password }) {
+    if (this.cookies.size === 0) {
+      await this.primeSession();
+    }
+
     return this.request('POST', 'user/login', {
       body: { username, password },
     });
