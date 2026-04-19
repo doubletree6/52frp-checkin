@@ -1,4 +1,5 @@
-const DEFAULT_BASE_URL = 'https://frp.80cn.cn/api';
+const DEFAULT_BASE_URL = 'https://www.52frp.com/api';
+const DEPRECATED_HOSTS = new Set(['frp.80cn.cn']);
 
 function normalizeBaseUrl(url) {
   if (!url || typeof url !== 'string') return DEFAULT_BASE_URL;
@@ -7,7 +8,23 @@ function normalizeBaseUrl(url) {
   if (!trimmed.startsWith('http://') && !trimmed.startsWith('https://')) {
     return DEFAULT_BASE_URL;
   }
-  return trimmed.replace(/\/api\/?$/, '').replace(/\/$/, '') + '/api';
+
+  try {
+    const parsed = new URL(trimmed);
+
+    if (DEPRECATED_HOSTS.has(parsed.hostname)) {
+      return DEFAULT_BASE_URL;
+    }
+
+    const normalizedPath = parsed.pathname.startsWith('/user') ? '' : parsed.pathname;
+    parsed.pathname = normalizedPath.replace(/\/api\/?$/, '').replace(/\/$/, '') + '/api';
+    parsed.search = '';
+    parsed.hash = '';
+
+    return parsed.toString().replace(/\/$/, '');
+  } catch {
+    return DEFAULT_BASE_URL;
+  }
 }
 
 function extractMessage(payload, fallback = '请求失败') {

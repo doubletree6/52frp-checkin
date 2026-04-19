@@ -2,7 +2,7 @@
 
 基于 GitHub Actions 的 52frp 自动签到脚本。
 
-目标站点：<https://frp.80cn.cn/user/#/auth/login>
+目标站点：<https://www.52frp.com/user/#/auth/login>
 
 1. `POST /api/user/login` 登录
 2. `GET /api/user/sign/info` 读取今日签到状态
@@ -27,7 +27,9 @@
 | `FRP_USERNAME` | 52frp 账号 / 手机号 / 邮箱 |
 | `FRP_PASSWORD` | 52frp 密码 |
 | `PUSHPLUS_TOKEN` | 可选，PushPlus 推送 token |
-| `FRP_BASE_URL` | 可选，默认 `https://frp.80cn.cn/api` |
+| `FRP_BASE_URL` | 可选，默认 `https://www.52frp.com/api` |
+
+> 注意：旧域名 `https://frp.80cn.cn` 已失效。脚本会自动把它兼容到当前域名 `https://www.52frp.com/api`，但新配置建议直接使用新域名。
 
 ## 使用方式
 
