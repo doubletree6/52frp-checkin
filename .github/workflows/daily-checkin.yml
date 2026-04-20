@@ -3,7 +3,8 @@ name: Daily 52frp Check-in
 on:
   workflow_dispatch:
   schedule:
-    - cron: '46 10 * * *'
+    # GitHub Actions cron uses UTC. 02:10 UTC = 10:10 Asia/Shanghai.
+    - cron: '10 2 * * *'
 
 jobs:
   checkin:
