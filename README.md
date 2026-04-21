@@ -2,19 +2,23 @@
 
 基于 GitHub Actions 的 52frp 自动签到脚本。
 
+当前实现采用两段式流程：
+
+1. 先用账号密码调用登录接口获取 token
+2. 再启动浏览器打开 52frp 面板，进入签到页并真实点击“立即签到”
+
 目标站点：<https://www.52frp.com/user/#/auth/login>
 
 1. `POST /api/user/login` 登录
-2. `GET /api/user/sign/info` 读取今日签到状态
-3. `GET /api/user/slider-token` 获取签到 token
-4. `POST /api/user/sign` 完成签到
+2. 浏览器通过 `admin_token` 进入面板登录态
+3. 打开 `#/welfare/sign`
+4. 模拟真实点击页面上的“立即签到”按钮
 
 ## 功能
 
 - 使用账号密码自动登录 52frp
 - 检查今天是否已签到
-- 自动获取签到用 `slider_token`
-- 调用签到接口完成签到
+- 通过真实页面点击完成签到，避免直接调用签到接口不稳定
 - 可选 PushPlus 推送结果
 - 支持 GitHub Actions 定时运行和手动触发
 
@@ -55,7 +59,7 @@
 ### 4. 运行
 
 - 手动运行：`Actions` → `Daily 52frp Check-in` → `Run workflow`
-- 定时运行：默认每天北京时间 **10:10** 执行
+- 定时运行：默认每天北京时间 **11:15** 执行
 
 ## 本地运行
 
@@ -104,6 +108,12 @@ CHECKIN_RESULT: 今天已经签到过了，累计签到 12 天，可用流量 5.
 
 ```bash
 npm test
+```
+
+首次本地跑浏览器版签到前，如果 Playwright 浏览器还没装，可以执行：
+
+```bash
+npx playwright install chromium
 ```
 
 ## License

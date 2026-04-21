@@ -150,6 +150,16 @@ function buildSuccessMessage(info, rewardBytes, userInfo) {
   return parts.join('') || '签到成功';
 }
 
+function calculateRewardBytes(beforeInfo, afterInfo, fallback = 0) {
+  const candidates = [
+    toNumber(fallback, 0),
+    toNumber(afterInfo?.totalTrafficBytes, 0) - toNumber(beforeInfo?.totalTrafficBytes, 0),
+    toNumber(afterInfo?.availableTrafficBytes, 0) - toNumber(beforeInfo?.availableTrafficBytes, 0),
+  ].filter((value) => value > 0);
+
+  return candidates.length > 0 ? Math.max(...candidates) : 0;
+}
+
 async function runCheckIn(api, credentials) {
   const loginResponse = await api.login(credentials);
   const authToken = extractLoginToken(loginResponse);
@@ -221,7 +231,91 @@ async function runCheckIn(api, credentials) {
   };
 }
 
+async function runBrowserBackedCheckIn(api, credentials, options = {}) {
+  const browserSigner =
+    options.browserSigner ||
+    (async (browserOptions) => {
+      const { signViaBrowser } = require('./browser');
+      return signViaBrowser(browserOptions);
+    });
+
+  const loginResponse = await api.login(credentials);
+  const authToken = extractLoginToken(loginResponse);
+
+  if (!authToken) {
+    throw new Error('登录成功但未拿到 token');
+  }
+
+  if (typeof api.setToken === 'function') {
+    api.setToken(authToken);
+  }
+
+  let userInfo = null;
+  try {
+    userInfo = normalizeUserInfo(await api.getUserInfo());
+  } catch {
+    userInfo = null;
+  }
+
+  const beforeInfo = normalizeSignInfo(await api.getSignInfo());
+  if (beforeInfo.signedToday) {
+    return {
+      status: 'already_signed',
+      message: buildAlreadySignedMessage(beforeInfo, userInfo),
+      details: { ...beforeInfo, userInfo },
+    };
+  }
+
+  const panelBaseUrl =
+    typeof api.buildPanelUrl === 'function'
+      ? api.buildPanelUrl()
+      : new URL('/user/', api.baseUrl || process.env.FRP_BASE_URL || 'https://www.52frp.com/api').toString();
+
+  const browserResult = await browserSigner({
+    panelBaseUrl,
+    authToken,
+    timeoutMs: options.timeoutMs,
+    launchOptions: options.launchOptions,
+  });
+
+  let finalInfo = beforeInfo;
+
+  try {
+    finalInfo = normalizeSignInfo(await api.getSignInfo());
+  } catch {
+    finalInfo = beforeInfo;
+  }
+
+  try {
+    userInfo = normalizeUserInfo(await api.getUserInfo());
+  } catch {
+    // keep previous value
+  }
+
+  if (!finalInfo.signedToday) {
+    throw new Error('页面已点击，但接口仍显示未签到');
+  }
+
+  const rewardBytes = calculateRewardBytes(beforeInfo, finalInfo, browserResult?.rewardBytes);
+  const status = browserResult?.status === 'already_signed' ? 'already_signed' : 'success';
+
+  return {
+    status,
+    message:
+      status === 'already_signed'
+        ? buildAlreadySignedMessage(finalInfo, userInfo)
+        : buildSuccessMessage(finalInfo, rewardBytes, userInfo),
+    details: {
+      ...finalInfo,
+      rewardBytes,
+      userInfo,
+      browserStatus: browserResult?.status || 'unknown',
+    },
+  };
+}
+
 module.exports = {
+  calculateRewardBytes,
   extractLoginToken,
   extractMessage,
   extractRewardBytes,
@@ -231,5 +325,6 @@ module.exports = {
   isRateLimited,
   normalizeSignInfo,
   normalizeUserInfo,
+  runBrowserBackedCheckIn,
   runCheckIn,
 };

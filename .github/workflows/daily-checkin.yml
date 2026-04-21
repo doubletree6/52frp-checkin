@@ -3,8 +3,8 @@ name: Daily 52frp Check-in
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions cron uses UTC. 02:10 UTC = 10:10 Asia/Shanghai.
-    - cron: '10 2 * * *'
+    # GitHub Actions cron uses UTC. 03:15 UTC = 11:15 Asia/Shanghai.
+    - cron: '15 3 * * *'
 
 jobs:
   checkin:
@@ -22,6 +22,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
 
       - name: Run check-in
         id: checkin

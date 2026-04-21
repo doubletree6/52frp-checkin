@@ -1,5 +1,5 @@
 const { FrpApiClient } = require('./src/api');
-const { runCheckIn } = require('./src/core');
+const { runBrowserBackedCheckIn } = require('./src/core');
 
 async function main() {
   const username = process.env.FRP_USERNAME;
@@ -13,7 +13,7 @@ async function main() {
     baseUrl: process.env.FRP_BASE_URL,
   });
 
-  const result = await runCheckIn(api, { username, password });
+  const result = await runBrowserBackedCheckIn(api, { username, password });
   console.log(result.message);
   console.log(`CHECKIN_RESULT: ${result.message}`);
 }
