@@ -87,6 +87,7 @@ async function signViaBrowser({
   const { chromium } = require('playwright');
   const browser = await chromium.launch({
     headless: process.env.FRP_BROWSER_HEADLESS !== 'false',
+    channel: process.env.FRP_BROWSER_CHANNEL || 'msedge',
     args: process.platform === 'linux' ? ['--no-sandbox'] : [],
     ...launchOptions,
   });
