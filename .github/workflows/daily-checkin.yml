@@ -31,6 +31,8 @@ jobs:
         env:
           FRP_USERNAME: ${{ secrets.FRP_USERNAME }}
           FRP_PASSWORD: ${{ secrets.FRP_PASSWORD }}
+          FRP_BROWSER_HEADLESS: 'true'
+          FRP_BROWSER_CHANNEL: chromium
         run: |
           set +e
           output=$(node checkin.js 2>&1)

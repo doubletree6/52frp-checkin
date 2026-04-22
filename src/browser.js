@@ -15,6 +15,26 @@ const LOGIN_PAGE = 'https://www.52frp.com/user/#/auth/login';
 const SIGN_PAGE = 'https://www.52frp.com/user/#/welfare/sign';
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+function resolveHeadless() {
+  if (typeof process.env.FRP_BROWSER_HEADLESS === 'string') {
+    return process.env.FRP_BROWSER_HEADLESS === 'true';
+  }
+
+  return Boolean(process.env.CI || process.env.GITHUB_ACTIONS);
+}
+
+function resolveChannel() {
+  if (process.env.FRP_BROWSER_CHANNEL) {
+    return process.env.FRP_BROWSER_CHANNEL;
+  }
+
+  if (process.env.CI || process.env.GITHUB_ACTIONS) {
+    return 'chromium';
+  }
+
+  return 'msedge';
+}
+
 /**
  * 检测并完成滑块验证
  *
@@ -330,8 +350,8 @@ async function pureBrowserCheckIn({
   console.log('');
 
   const browser = await chromium.launch({
-    headless: process.env.FRP_BROWSER_HEADLESS === 'true',
-    channel: process.env.FRP_BROWSER_CHANNEL || 'msedge',
+    headless: resolveHeadless(),
+    channel: resolveChannel(),
     args: process.platform === 'linux' ? ['--no-sandbox'] : [],
     ...launchOptions,
   });

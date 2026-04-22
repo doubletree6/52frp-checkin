@@ -48,9 +48,6 @@ async function main() {
       username,
       password,
       timeoutMs: process.env.FRP_TIMEOUT_MS ? parseInt(process.env.FRP_TIMEOUT_MS, 10) : 60_000,
-      launchOptions: {
-        headless: process.env.FRP_BROWSER_HEADLESS === 'true',
-      },
     });
 
     console.log('');
