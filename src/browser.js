@@ -56,27 +56,77 @@ async function extractSignStats(page) {
   };
 }
 
+function pickLargestTrafficText(candidates) {
+  const normalized = candidates
+    .filter(Boolean)
+    .map((value) => String(value).replace(/\s+/g, ''))
+    .map((value) => ({ text: value, bytes: trafficTextToBytes(value) }))
+    .filter((item) => Number.isFinite(item.bytes) && item.bytes > 0)
+    .sort((a, b) => b.bytes - a.bytes);
+
+  return normalized[0] || { text: null, bytes: null };
+}
+
 async function extractDashboardStats(page) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
 
   const todayRewardMatch = bodyText.match(/本次签到获得\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
-  const remainingBeforeLabelMatch = bodyText.match(/([\d.]+\s*(?:TB|GB|MB|KB|B))\s*剩余流量/i);
-  const remainingAfterLabelMatch = bodyText.match(/剩余流量\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+  const remainingCandidates = [
+    ...Array.from(bodyText.matchAll(/([\d.]+\s*(?:TB|GB|MB|KB|B))\s*剩余流量/ig)).map((match) => match[1]),
+    ...Array.from(bodyText.matchAll(/剩余流量\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/ig)).map((match) => match[1]),
+  ];
 
   const todayRewardText = todayRewardMatch ? todayRewardMatch[1].replace(/\s+/g, '') : null;
-  const remainingText = remainingBeforeLabelMatch
-    ? remainingBeforeLabelMatch[1].replace(/\s+/g, '')
-    : remainingAfterLabelMatch
-      ? remainingAfterLabelMatch[1].replace(/\s+/g, '')
-      : null;
+  const remainingBest = pickLargestTrafficText(remainingCandidates);
 
   return {
     todayRewardText,
     todayRewardBytes: trafficTextToBytes(todayRewardText),
-    remainingText,
-    remainingBytes: trafficTextToBytes(remainingText),
+    remainingText: remainingBest.text,
+    remainingBytes: remainingBest.bytes,
+    remainingCandidates,
     rawText: bodyText,
   };
+}
+
+async function waitForDashboardStats(page, timeoutMs = 15_000) {
+  await page.waitForLoadState('networkidle', { timeout: Math.min(timeoutMs, 10_000) }).catch(() => {});
+
+  try {
+    await page.waitForFunction(
+      () => {
+        const text = document.body?.innerText || '';
+        return text.includes('本次签到获得') && text.includes('剩余流量');
+      },
+      { timeout: timeoutMs }
+    );
+  } catch {}
+
+  await page.waitForTimeout(1200);
+}
+
+async function loadDashboardStats(page, dashboardUrl) {
+  await waitForDashboardStats(page);
+  let stats = await extractDashboardStats(page);
+
+  if (stats.todayRewardBytes && stats.remainingBytes) {
+    return stats;
+  }
+
+  console.log('[主页] 首次提取统计不完整，刷新个人主页后重试...');
+
+  if (dashboardUrl) {
+    await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await waitForDashboardStats(page);
+    stats = await extractDashboardStats(page);
+  }
+
+  if (stats.todayRewardBytes && stats.remainingBytes) {
+    return stats;
+  }
+
+  console.log('[主页] 仪表盘仍未提取完整，继续使用当前可得数据');
+  return stats;
 }
 
 function buildResultTemplate(signStats, dashboardStats) {
@@ -517,7 +567,7 @@ async function pureBrowserCheckIn({
     }
 
     dashboardUrl = page.url();
-    dashboardStats = await extractDashboardStats(page);
+    dashboardStats = await loadDashboardStats(page, dashboardUrl);
 
     // 步骤 4: 跳转签到页
     console.log('[4/5] 跳转签到页...');
@@ -563,9 +613,7 @@ async function pureBrowserCheckIn({
     let afterDashboardStats = dashboardStats;
     if (dashboardUrl) {
       await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
-      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-      await page.waitForTimeout(1500);
-      afterDashboardStats = await extractDashboardStats(page);
+      afterDashboardStats = await loadDashboardStats(page, dashboardUrl);
     }
 
     if (afterCheck.signed) {
@@ -620,6 +668,8 @@ module.exports = {
   extractDashboardStats,
   extractSignStats,
   buildResultTemplate,
+  loadDashboardStats,
+  waitForDashboardStats,
   formatTrafficCompact,
   trafficTextToBytes,
   waitForLoginSuccess,
