@@ -1,26 +1,21 @@
 # 52frp-checkin
 
-基于 GitHub Actions 的 52frp 自动签到脚本。
+基于 GitHub Actions 的 52frp 自动签到脚本（纯浏览器自动化，不调用任何 API）。
 
-当前实现采用两段式流程：
+## 工作原理
 
-1. 先用账号密码调用登录接口获取 token
-2. 再启动浏览器打开 52frp 面板，进入签到页并真实点击“立即签到”
+全程浏览器自动化，模拟真实用户操作：
 
-目标站点：<https://www.52frp.com/user/#/auth/login>
+1. 打开登录页 → 自动填账号密码
+2. 点击登录 → 检测滑块验证 → 自动拖动滑块到最右边
+3. 滑块验证通过 → 再次点击登录完成登录
+4. 登录成功 → 自动跳转签到页
+5. 点击"立即签到"按钮 → 检查签到结果
 
-1. `POST /api/user/login` 登录
-2. 浏览器通过 `admin_token` 进入面板登录态
-3. 打开 `#/welfare/sign`
-4. 模拟真实点击页面上的“立即签到”按钮
-
-## 功能
-
-- 使用账号密码自动登录 52frp
-- 检查今天是否已签到
-- 通过真实页面点击完成签到，避免直接调用签到接口不稳定
-- 可选 PushPlus 推送结果
-- 支持 GitHub Actions 定时运行和手动触发
+**为什么不用 API？**
+- 直接调用签到 API 不稳定（容易触发限流）
+- 滑块验证难以通过 API 完成
+- 浏览器自动化更接近真实用户行为
 
 ## Secrets 配置
 
@@ -31,9 +26,6 @@
 | `FRP_USERNAME` | 52frp 账号 / 手机号 / 邮箱 |
 | `FRP_PASSWORD` | 52frp 密码 |
 | `PUSHPLUS_TOKEN` | 可选，PushPlus 推送 token |
-| `FRP_BASE_URL` | 可选，默认 `https://www.52frp.com/api` |
-
-> 注意：旧域名 `https://frp.80cn.cn` 已失效。脚本会自动把它兼容到当前域名 `https://www.52frp.com/api`，但新配置建议直接使用新域名。
 
 ## 使用方式
 
@@ -64,8 +56,9 @@
 ## 本地运行
 
 ```bash
+# 复制环境变量模板
 cp .env.example .env
-# 手动填入账号密码
+# 编辑 .env 填入账号密码
 node checkin.js
 ```
 
@@ -77,16 +70,16 @@ FRP_USERNAME='your_username' FRP_PASSWORD='your_password' node checkin.js
 
 ## 输出示例
 
+签到成功：
+
 ```text
-签到成功，累计签到 5 天，本次获得 2.00 GB，可用流量 3.00 GB
-CHECKIN_RESULT: 签到成功，累计签到 5 天，本次获得 2.00 GB，可用流量 3.00 GB
+CHECKIN_RESULT: success: 签到成功
 ```
 
-如果今天已经签到过了：
+今天已经签到过了：
 
 ```text
-今天已经签到过了，累计签到 12 天，可用流量 5.00 GB
-CHECKIN_RESULT: 今天已经签到过了，累计签到 12 天，可用流量 5.00 GB
+CHECKIN_RESULT: success: 您今天已经签到过了
 ```
 
 ## 项目结构
@@ -94,25 +87,19 @@ CHECKIN_RESULT: 今天已经签到过了，累计签到 12 天，可用流量 5.
 ```text
 .
 ├── .github/workflows/daily-checkin.yml
-├── src/
-│   ├── api.js
-│   └── core.js
-├── test/core.test.js
-├── checkin.js
-├── push_notification.js
+├── checkin.js           # 入口脚本
+├── src/browser.js       # 纯浏览器签到核心模块
+├── push_notification.js # PushPlus 推送通知
 ├── .env.example
 └── README.md
 ```
 
 ## 开发
 
-```bash
-npm test
-```
-
-首次本地跑浏览器版签到前，如果 Playwright 浏览器还没装，可以执行：
+首次运行前需要安装 Playwright：
 
 ```bash
+npm install
 npx playwright install chromium
 ```
 
