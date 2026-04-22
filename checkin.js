@@ -60,8 +60,8 @@ async function main() {
     console.log('='.repeat(50));
     console.log('');
 
-    // 输出标准化结果（供 GitHub Actions 捕获）
-    console.log(`CHECKIN_RESULT: ${result.status}: ${result.message}`);
+    // 输出标准化结果（供 GitHub Actions / PushPlus 捕获）
+    console.log(`CHECKIN_RESULT: ${result.message}`);
 
     // 设置退出码
     if (result.status === 'success' || result.status === 'already_signed') {
@@ -77,7 +77,7 @@ async function main() {
     console.error('='.repeat(50));
     console.error('');
 
-    console.log(`CHECKIN_RESULT: error: ${error.message}`);
+    console.log(`CHECKIN_RESULT: error:${error.message}`);
     process.exit(1);
   }
 }

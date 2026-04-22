@@ -15,6 +15,60 @@ const LOGIN_PAGE = 'https://www.52frp.com/user/#/auth/login';
 const SIGN_PAGE = 'https://www.52frp.com/user/#/welfare/sign';
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+function trafficTextToBytes(value) {
+  if (!value) return null;
+
+  const match = String(value).trim().match(/^([\d.]+)\s*(TB|GB|MB|KB|B)$/i);
+  if (!match) return null;
+
+  const number = Number(match[1]);
+  const unit = match[2].toUpperCase();
+  const powers = { B: 0, KB: 1, MB: 2, GB: 3, TB: 4 };
+  return Math.round(number * 1024 ** powers[unit]);
+}
+
+function formatTrafficCompact(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0B';
+
+  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(2)}T`;
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)}G`;
+  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)}M`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)}K`;
+  return `${Math.round(bytes)}B`;
+}
+
+async function extractSignStats(page) {
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+
+  const daysMatch = bodyText.match(/累计签到\s*(\d+)\s*天/);
+  const totalRewardMatch = bodyText.match(/签到获得\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+  const remainingMatch = bodyText.match(/可用流量\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+
+  const totalSignDays = daysMatch ? Number(daysMatch[1]) : null;
+  const totalRewardText = totalRewardMatch ? totalRewardMatch[1].replace(/\s+/g, '') : null;
+  const remainingText = remainingMatch ? remainingMatch[1].replace(/\s+/g, '') : null;
+
+  return {
+    totalSignDays,
+    totalRewardText,
+    totalRewardBytes: trafficTextToBytes(totalRewardText),
+    remainingText,
+    remainingBytes: trafficTextToBytes(remainingText),
+    rawText: bodyText,
+  };
+}
+
+function buildResultTemplate(stats, todayRewardBytes = null) {
+  const days = Number.isFinite(stats?.totalSignDays) ? stats.totalSignDays : 'x';
+  const todayReward = Number.isFinite(todayRewardBytes) && todayRewardBytes > 0
+    ? formatTrafficCompact(todayRewardBytes)
+    : 'xM';
+  const totalReward = stats?.totalRewardText ? stats.totalRewardText.replace(/B$/, '') : 'xG';
+  const remaining = stats?.remainingText ? stats.remainingText.replace(/B$/, '') : 'xG';
+
+  return `${days}:${todayReward};${totalReward};${remaining}`;
+}
+
 function resolveHeadless() {
   if (typeof process.env.FRP_BROWSER_HEADLESS === 'string') {
     return process.env.FRP_BROWSER_HEADLESS === 'true';
@@ -366,6 +420,7 @@ async function pureBrowserCheckIn({
   const steps = [];
   let loginSuccess = false;
   let sliderHandled = false;
+  let beforeStats = null;
 
   try {
     // 步骤 1: 打开登录页
@@ -445,15 +500,17 @@ async function pureBrowserCheckIn({
     await page.goto(SIGN_PAGE, { waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
     await page.waitForTimeout(2000);
+    beforeStats = await extractSignStats(page);
 
     // 检查是否已签到
     const beforeCheck = await checkSignedToday(page);
     if (beforeCheck.signed) {
+      const template = buildResultTemplate(beforeStats, null);
       console.log(`[签到] ${beforeCheck.pattern}`);
       return {
         status: 'already_signed',
-        message: beforeCheck.pattern,
-        details: { steps, loginSuccess, sliderHandled },
+        message: template,
+        details: { steps, loginSuccess, sliderHandled, stats: beforeStats, template },
       };
     }
 
@@ -475,26 +532,24 @@ async function pureBrowserCheckIn({
 
     // 检查最终状态
     const afterCheck = await checkSignedToday(page);
+    const afterStats = await extractSignStats(page);
+    const todayRewardBytes = Number.isFinite(afterStats?.remainingBytes) && Number.isFinite(beforeStats?.remainingBytes)
+      ? Math.max(0, afterStats.remainingBytes - beforeStats.remainingBytes)
+      : null;
 
     if (afterCheck.signed) {
-      // 尝试获取更多信息
-      let signInfo = '';
-      try {
-        // 查找累计签到天数等信息
-        const infoElements = await page.locator('[class*="sign"], .info, .statistics').allInnerTexts();
-        signInfo = infoElements.join(' ').trim();
-      } catch {
-        signInfo = '';
-      }
+      const template = buildResultTemplate(afterStats, todayRewardBytes);
 
       return {
         status: 'success',
-        message: afterCheck.pattern || '签到成功',
+        message: template,
         details: {
           steps,
           loginSuccess,
           sliderHandled,
-          signInfo,
+          stats: afterStats,
+          todayRewardBytes,
+          template,
         },
       };
     }
@@ -505,10 +560,15 @@ async function pureBrowserCheckIn({
     if (toastCount > 0) {
       const toastText = await toastLocator.innerText().catch(() => '');
       if (toastText.includes('成功')) {
+        const afterStats = await extractSignStats(page);
+        const todayRewardBytes = Number.isFinite(afterStats?.remainingBytes) && Number.isFinite(beforeStats?.remainingBytes)
+          ? Math.max(0, afterStats.remainingBytes - beforeStats.remainingBytes)
+          : null;
+        const template = buildResultTemplate(afterStats, todayRewardBytes);
         return {
           status: 'success',
-          message: toastText,
-          details: { steps, loginSuccess, sliderHandled },
+          message: template,
+          details: { steps, loginSuccess, sliderHandled, stats: afterStats, todayRewardBytes, template },
         };
       }
 
@@ -530,6 +590,10 @@ module.exports = {
   handleSliderVerification,
   checkSignedToday,
   clickSignButton,
+  extractSignStats,
+  buildResultTemplate,
+  formatTrafficCompact,
+  trafficTextToBytes,
   waitForLoginSuccess,
   waitForSignResult,
 };
