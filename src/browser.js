@@ -30,10 +30,12 @@ function trafficTextToBytes(value) {
 function formatTrafficCompact(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0B';
 
-  if (bytes >= 1024 ** 4) return `${(bytes / 1024 ** 4).toFixed(2)}T`;
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)}G`;
-  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)}M`;
-  if (bytes >= 1024) return `${Math.round(bytes / 1024)}K`;
+  const trim = (value) => value.replace(/\.0+$/, '').replace(/(\.\d*[1-9])0+$/, '$1');
+
+  if (bytes >= 1024 ** 4) return `${trim((bytes / 1024 ** 4).toFixed(2))}T`;
+  if (bytes >= 1024 ** 3) return `${trim((bytes / 1024 ** 3).toFixed(2))}G`;
+  if (bytes >= 1024 ** 2) return `${trim((bytes / 1024 ** 2).toFixed(2))}M`;
+  if (bytes >= 1024) return `${trim((bytes / 1024).toFixed(2))}K`;
   return `${Math.round(bytes)}B`;
 }
 
@@ -42,29 +44,48 @@ async function extractSignStats(page) {
 
   const daysMatch = bodyText.match(/累计签到\s*(\d+)\s*天/);
   const totalRewardMatch = bodyText.match(/签到获得\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
-  const remainingMatch = bodyText.match(/可用流量\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
 
   const totalSignDays = daysMatch ? Number(daysMatch[1]) : null;
   const totalRewardText = totalRewardMatch ? totalRewardMatch[1].replace(/\s+/g, '') : null;
-  const remainingText = remainingMatch ? remainingMatch[1].replace(/\s+/g, '') : null;
 
   return {
     totalSignDays,
     totalRewardText,
     totalRewardBytes: trafficTextToBytes(totalRewardText),
+    rawText: bodyText,
+  };
+}
+
+async function extractDashboardStats(page) {
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+
+  const todayRewardMatch = bodyText.match(/本次签到获得\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+  const remainingBeforeLabelMatch = bodyText.match(/([\d.]+\s*(?:TB|GB|MB|KB|B))\s*剩余流量/i);
+  const remainingAfterLabelMatch = bodyText.match(/剩余流量\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+
+  const todayRewardText = todayRewardMatch ? todayRewardMatch[1].replace(/\s+/g, '') : null;
+  const remainingText = remainingBeforeLabelMatch
+    ? remainingBeforeLabelMatch[1].replace(/\s+/g, '')
+    : remainingAfterLabelMatch
+      ? remainingAfterLabelMatch[1].replace(/\s+/g, '')
+      : null;
+
+  return {
+    todayRewardText,
+    todayRewardBytes: trafficTextToBytes(todayRewardText),
     remainingText,
     remainingBytes: trafficTextToBytes(remainingText),
     rawText: bodyText,
   };
 }
 
-function buildResultTemplate(stats, todayRewardBytes = null) {
-  const days = Number.isFinite(stats?.totalSignDays) ? stats.totalSignDays : 'x';
-  const todayReward = Number.isFinite(todayRewardBytes) && todayRewardBytes > 0
-    ? formatTrafficCompact(todayRewardBytes)
+function buildResultTemplate(signStats, dashboardStats) {
+  const days = Number.isFinite(signStats?.totalSignDays) ? signStats.totalSignDays : 'x';
+  const todayReward = Number.isFinite(dashboardStats?.todayRewardBytes) && dashboardStats.todayRewardBytes > 0
+    ? formatTrafficCompact(dashboardStats.todayRewardBytes)
     : 'xM';
-  const totalReward = stats?.totalRewardText ? stats.totalRewardText.replace(/B$/, '') : 'xG';
-  const remaining = stats?.remainingText ? stats.remainingText.replace(/B$/, '') : 'xG';
+  const totalReward = signStats?.totalRewardText ? signStats.totalRewardText.replace(/B$/, '') : 'xG';
+  const remaining = dashboardStats?.remainingText ? dashboardStats.remainingText.replace(/B$/, '') : 'xG';
 
   return `${days}:${todayReward};${totalReward};${remaining}`;
 }
@@ -420,6 +441,8 @@ async function pureBrowserCheckIn({
   const steps = [];
   let loginSuccess = false;
   let sliderHandled = false;
+  let dashboardUrl = null;
+  let dashboardStats = null;
   let beforeStats = null;
 
   try {
@@ -493,6 +516,9 @@ async function pureBrowserCheckIn({
       }
     }
 
+    dashboardUrl = page.url();
+    dashboardStats = await extractDashboardStats(page);
+
     // 步骤 4: 跳转签到页
     console.log('[4/5] 跳转签到页...');
     steps.push('goto_sign');
@@ -505,12 +531,12 @@ async function pureBrowserCheckIn({
     // 检查是否已签到
     const beforeCheck = await checkSignedToday(page);
     if (beforeCheck.signed) {
-      const template = buildResultTemplate(beforeStats, null);
+      const template = buildResultTemplate(beforeStats, dashboardStats);
       console.log(`[签到] ${beforeCheck.pattern}`);
       return {
         status: 'already_signed',
         message: template,
-        details: { steps, loginSuccess, sliderHandled, stats: beforeStats, template },
+        details: { steps, loginSuccess, sliderHandled, signStats: beforeStats, dashboardStats, template },
       };
     }
 
@@ -533,12 +559,17 @@ async function pureBrowserCheckIn({
     // 检查最终状态
     const afterCheck = await checkSignedToday(page);
     const afterStats = await extractSignStats(page);
-    const todayRewardBytes = Number.isFinite(afterStats?.remainingBytes) && Number.isFinite(beforeStats?.remainingBytes)
-      ? Math.max(0, afterStats.remainingBytes - beforeStats.remainingBytes)
-      : null;
+
+    let afterDashboardStats = dashboardStats;
+    if (dashboardUrl) {
+      await page.goto(dashboardUrl, { waitUntil: 'domcontentloaded' }).catch(() => {});
+      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+      await page.waitForTimeout(1500);
+      afterDashboardStats = await extractDashboardStats(page);
+    }
 
     if (afterCheck.signed) {
-      const template = buildResultTemplate(afterStats, todayRewardBytes);
+      const template = buildResultTemplate(afterStats, afterDashboardStats);
 
       return {
         status: 'success',
@@ -547,8 +578,8 @@ async function pureBrowserCheckIn({
           steps,
           loginSuccess,
           sliderHandled,
-          stats: afterStats,
-          todayRewardBytes,
+          signStats: afterStats,
+          dashboardStats: afterDashboardStats,
           template,
         },
       };
@@ -560,15 +591,11 @@ async function pureBrowserCheckIn({
     if (toastCount > 0) {
       const toastText = await toastLocator.innerText().catch(() => '');
       if (toastText.includes('成功')) {
-        const afterStats = await extractSignStats(page);
-        const todayRewardBytes = Number.isFinite(afterStats?.remainingBytes) && Number.isFinite(beforeStats?.remainingBytes)
-          ? Math.max(0, afterStats.remainingBytes - beforeStats.remainingBytes)
-          : null;
-        const template = buildResultTemplate(afterStats, todayRewardBytes);
+        const template = buildResultTemplate(afterStats, afterDashboardStats);
         return {
           status: 'success',
           message: template,
-          details: { steps, loginSuccess, sliderHandled, stats: afterStats, todayRewardBytes, template },
+          details: { steps, loginSuccess, sliderHandled, signStats: afterStats, dashboardStats: afterDashboardStats, template },
         };
       }
 
@@ -590,6 +617,7 @@ module.exports = {
   handleSliderVerification,
   checkSignedToday,
   clickSignButton,
+  extractDashboardStats,
   extractSignStats,
   buildResultTemplate,
   formatTrafficCompact,
