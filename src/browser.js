@@ -14,6 +14,16 @@ const { chromium } = require('playwright');
 const LOGIN_PAGE = 'https://www.52frp.com/user/#/auth/login';
 const SIGN_PAGE = 'https://www.52frp.com/user/#/welfare/sign';
 const DEFAULT_TIMEOUT_MS = 60_000;
+const SIGN_DATE_TIMEZONE = 'Asia/Shanghai';
+
+function getTodaySignDate() {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: SIGN_DATE_TIMEZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+}
 
 function trafficTextToBytes(value) {
   if (!value) return null;
@@ -384,6 +394,22 @@ async function checkSignedToday(page) {
     }
   }
 
+  const today = getTodaySignDate();
+  const lastSignDateMatch = bodyText.match(/上次签到\s*(\d{4}-\d{2}-\d{2})/);
+  if (lastSignDateMatch?.[1] === today) {
+    return { signed: true, pattern: `上次签到 ${today}` };
+  }
+
+  const signRecordTodayPattern = new RegExp(`签到记录[\\s\\S]{0,800}${today}`);
+  if (signRecordTodayPattern.test(bodyText)) {
+    return { signed: true, pattern: `签到记录 ${today}` };
+  }
+
+  const signedButtonPattern = /(今日已签到|已签到|已经签到)/;
+  if (signedButtonPattern.test(bodyText) && !bodyText.includes('立即签到')) {
+    return { signed: true, pattern: '按钮状态已签到' };
+  }
+
   return { signed: false };
 }
 
@@ -498,7 +524,7 @@ async function clickSignButton(page) {
 /**
  * 等待签到结果
  */
-async function waitForSignResult(page, timeoutMs = 10_000) {
+async function waitForSignResult(page, timeoutMs = 30_000) {
   console.log('[签到] 等待签到结果...');
 
   try {
@@ -676,8 +702,14 @@ async function pureBrowserCheckIn({
       throw new Error('未找到签到按钮');
     }
 
+    // 点击成功后，稍等一下让网站有机会显示结果或新遮罩
+    await page.waitForTimeout(2000);
+    // 关闭签到按钮点击后可能弹出的新遮罩（例如签到后弹出的公告）
+    await dismissBlockingOverlays(page);
+    await page.waitForTimeout(1000);
+
     // 等待结果
-    await waitForSignResult(page, 10_000);
+    await waitForSignResult(page);
 
     // 检查最终状态
     const afterCheck = await checkSignedToday(page);
