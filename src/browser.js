@@ -703,8 +703,10 @@ async function pureBrowserCheckIn({
     }
 
     // 点击成功后，检测并处理可能出现的签到滑块验证
+    console.log('[签到] 准备检测签到滑块...');
     await page.waitForTimeout(1500);
     const signSliderResult = await handleSliderVerification(page, 20_000);
+    console.log('[签到] 滑块检测完成, handled:', signSliderResult.handled, 'success:', signSliderResult.success);
     if (signSliderResult.handled) {
       console.log('[签到滑块] 处理结果:', signSliderResult.success ? '验证通过' : '验证失败');
       // 滑块验证通过后，可能需要再次触发签到（某些站点设计）
