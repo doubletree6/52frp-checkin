@@ -702,9 +702,26 @@ async function pureBrowserCheckIn({
       throw new Error('未找到签到按钮');
     }
 
-    // 点击成功后，稍等一下让网站有机会显示结果或新遮罩
-    await page.waitForTimeout(2000);
-    // 关闭签到按钮点击后可能弹出的新遮罩（例如签到后弹出的公告）
+    // 点击成功后，检测并处理可能出现的签到滑块验证
+    await page.waitForTimeout(1500);
+    const signSliderResult = await handleSliderVerification(page, 20_000);
+    if (signSliderResult.handled) {
+      console.log('[签到滑块] 处理结果:', signSliderResult.success ? '验证通过' : '验证失败');
+      // 滑块验证通过后，可能需要再次触发签到（某些站点设计）
+      if (signSliderResult.success) {
+        await page.waitForTimeout(2000);
+        // 检查是否还有签到按钮需要再次点击
+        const stillHasSignButton = await page.getByRole('button', { name: '立即签到' }).count();
+        if (stillHasSignButton > 0) {
+          console.log('[签到] 滑块验证后再次点击签到按钮...');
+          await dismissBlockingOverlays(page);
+          await page.getByRole('button', { name: '立即签到' }).first().click().catch(() => {});
+          await page.waitForTimeout(1500);
+        }
+      }
+    }
+
+    // 关闭签到成功后可能弹出的公告遮罩
     await dismissBlockingOverlays(page);
     await page.waitForTimeout(1000);
 
