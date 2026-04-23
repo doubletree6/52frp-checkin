@@ -388,10 +388,83 @@ async function checkSignedToday(page) {
 }
 
 /**
+ * 关闭可能阻挡点击的公告遮罩层
+ *
+ * 52frp 登录后可能会显示全屏公告弹窗，拦截所有点击事件。
+ * 此函数检测并关闭这类遮罩层，确保后续操作能正常执行。
+ */
+async function dismissBlockingOverlays(page) {
+  // 检测常见的遮罩层选择器
+  const overlaySelectors = [
+    '.announcement-fullscreen-overlay',
+    '.announcement-overlay',
+    '.fullscreen-overlay',
+    '[class*="announcement-fullscreen"]',
+    '[class*="announcement"][class*="overlay"]',
+  ];
+
+  for (const selector of overlaySelectors) {
+    const overlay = page.locator(selector);
+    const count = await overlay.count().catch(() => 0);
+
+    if (count > 0) {
+      console.log(`[遮罩] 检测到遮罩层: ${selector}`);
+
+      // 尝试多种方式关闭
+      const closeStrategies = [
+        // 1. 点击遮罩层内的关闭按钮
+        { name: '我知道了', locator: overlay.locator('button:has-text("我知道了")').first() },
+        { name: '确定', locator: overlay.locator('button:has-text("确定")').first() },
+        { name: '关闭', locator: overlay.locator('button:has-text("关闭")').first() },
+        { name: 'OK', locator: overlay.locator('button:has-text("OK")').first() },
+        { name: '关闭图标', locator: overlay.locator('.el-dialog__close, [aria-label="Close"], .close-btn').first() },
+      ];
+
+      for (const strategy of closeStrategies) {
+        const btnCount = await strategy.locator.count().catch(() => 0);
+        if (btnCount > 0) {
+          console.log(`[遮罩] 尝试点击: ${strategy.name}`);
+          await strategy.locator.click().catch(() => {});
+          await page.waitForTimeout(500);
+
+          // 检查遮罩层是否消失
+          const remaining = await overlay.count().catch(() => 0);
+          if (remaining === 0) {
+            console.log(`[遮罩] 已通过 ${strategy.name} 关闭`);
+            return true;
+          }
+        }
+      }
+
+      // 2. 尝试 Escape 键
+      console.log('[遮罩] 尝试 Escape 键');
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
+
+      const afterEscape = await overlay.count().catch(() => 0);
+      if (afterEscape === 0) {
+        console.log('[遮罩] 已通过 Escape 关闭');
+        return true;
+      }
+
+      // 3. 最后手段：强制移除 DOM 元素
+      console.log('[遮罩] 强制移除遮罩层 DOM');
+      await overlay.evaluate(el => el.remove()).catch(() => {});
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * 查找并点击签到按钮
  */
 async function clickSignButton(page) {
   console.log('[签到] 查找签到按钮...');
+
+  // 先关闭可能阻挡点击的遮罩层
+  await dismissBlockingOverlays(page);
 
   // 多种方式查找按钮
   const strategies = [
@@ -665,6 +738,7 @@ module.exports = {
   handleSliderVerification,
   checkSignedToday,
   clickSignButton,
+  dismissBlockingOverlays,
   extractDashboardStats,
   extractSignStats,
   buildResultTemplate,
