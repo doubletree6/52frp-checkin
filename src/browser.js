@@ -542,10 +542,63 @@ async function waitForSignResult(page, timeoutMs = 30_000) {
       { timeout: timeoutMs }
     );
   } catch {
-    // 继检查最终状态
+    // 继续检查最终状态
   }
 
   await page.waitForTimeout(1000);
+}
+
+async function waitForSignRequest(page, timeoutMs = 15_000) {
+  try {
+    const response = await page.waitForResponse(
+      (res) => res.request().method() === 'POST' && /\/user\/sign(?:\?|$)/.test(res.url()),
+      { timeout: timeoutMs }
+    );
+
+    const text = await response.text().catch(() => '');
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {}
+
+    console.log(`[签到] 捕获签到请求: ${response.status()} ${response.url()}`);
+    if (json) {
+      const message = json.message || json.msg || json.error || json.detail;
+      if (message) {
+        console.log(`[签到] 接口返回: ${message}`);
+      }
+    }
+
+    return {
+      seen: true,
+      status: response.status(),
+      url: response.url(),
+      text,
+      json,
+    };
+  } catch {
+    console.log('[签到] 未捕获到签到请求');
+    return { seen: false };
+  }
+}
+
+function inferSignStateFromRequest(signRequest) {
+  if (!signRequest?.seen) return { signed: false };
+
+  const raw = [
+    signRequest.text,
+    signRequest.json ? JSON.stringify(signRequest.json) : '',
+  ].filter(Boolean).join('\n');
+
+  if (/今天已经签到过了|您今天已经签到过了|已签到|已经签到/i.test(raw)) {
+    return { signed: true, pattern: '接口返回已签到' };
+  }
+
+  if (/签到成功|success|成功|恭喜/i.test(raw)) {
+    return { signed: true, pattern: '接口返回签到成功' };
+  }
+
+  return { signed: false };
 }
 
 /**
@@ -693,6 +746,7 @@ async function pureBrowserCheckIn({
     console.log('[5/5] 点击签到按钮...');
     steps.push('click_sign');
 
+    const signRequestPromise = waitForSignRequest(page);
     const clickResult = await clickSignButton(page);
 
     if (!clickResult.clicked) {
@@ -727,11 +781,14 @@ async function pureBrowserCheckIn({
     await dismissBlockingOverlays(page);
     await page.waitForTimeout(1000);
 
+    const signRequest = await signRequestPromise;
+
     // 等待结果
     await waitForSignResult(page);
 
     // 检查最终状态
     const afterCheck = await checkSignedToday(page);
+    const requestCheck = inferSignStateFromRequest(signRequest);
     const afterStats = await extractSignStats(page);
 
     let afterDashboardStats = dashboardStats;
@@ -740,7 +797,7 @@ async function pureBrowserCheckIn({
       afterDashboardStats = await loadDashboardStats(page, dashboardUrl);
     }
 
-    if (afterCheck.signed) {
+    if (afterCheck.signed || requestCheck.signed) {
       const template = buildResultTemplate(afterStats, afterDashboardStats);
 
       return {
@@ -753,6 +810,8 @@ async function pureBrowserCheckIn({
           signStats: afterStats,
           dashboardStats: afterDashboardStats,
           template,
+          signRequest,
+          signInfo: afterCheck.pattern || requestCheck.pattern,
         },
       };
     }
@@ -774,6 +833,8 @@ async function pureBrowserCheckIn({
       throw new Error(`签到失败: ${toastText}`);
     }
 
+    const bodyPreview = await page.locator('body').innerText().catch(() => '');
+    console.log('[签到] 最终页面内容预览:', bodyPreview.substring(0, 1000));
     throw new Error('未检测到签到成功或失败提示');
 
   } finally {
@@ -799,4 +860,6 @@ module.exports = {
   trafficTextToBytes,
   waitForLoginSuccess,
   waitForSignResult,
+  waitForSignRequest,
+  inferSignStateFromRequest,
 };

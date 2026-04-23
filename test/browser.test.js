@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const { clickSignButton, checkSignedToday } = require('../src/browser');
+const { clickSignButton, checkSignedToday, inferSignStateFromRequest } = require('../src/browser');
 
 async function withPage(fn) {
   const browser = await chromium.launch({ headless: true });
@@ -92,4 +92,14 @@ test('checkSignedToday treats today\'s last sign date as already signed', async 
 
     assert.equal(result.signed, true);
   });
+});
+
+test('inferSignStateFromRequest treats API success copy as signed', () => {
+  const result = inferSignStateFromRequest({
+    seen: true,
+    text: JSON.stringify({ msg: '签到成功' }),
+    json: { msg: '签到成功' },
+  });
+
+  assert.equal(result.signed, true);
 });
