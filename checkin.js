@@ -21,11 +21,11 @@
  */
 
 const { pureBrowserCheckIn } = require('./src/browser');
+const { getCredentials } = require('./src/config');
 
 async function main() {
-  // 从环境变量读取凭证
-  const username = process.env.FRP_USERNAME;
-  const password = process.env.FRP_PASSWORD;
+  // 从 shell 环境变量或 .env 文件读取凭证
+  const { username, password } = getCredentials();
 
   if (!username || !password) {
     console.error('错误: 请先配置 FRP_USERNAME 和 FRP_PASSWORD');

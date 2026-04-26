@@ -4,7 +4,8 @@
   "description": "GitHub Actions based automatic daily check-in for 52frp (pure browser automation, no API calls)",
   "main": "checkin.js",
   "scripts": {
-    "checkin": "node checkin.js"
+    "checkin": "node checkin.js",
+    "test": "node --test"
   },
   "dependencies": {
     "playwright": "^1.55.0"
