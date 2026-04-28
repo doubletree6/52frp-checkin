@@ -520,8 +520,9 @@ async function clickSignButton(page) {
         const text = await button.innerText().catch(() => '');
         console.log(`[签到] 找到按钮 (${strategy.name}): "${text.trim()}"`);
 
-        await button.click();
-        console.log('[签到] 已点击签到按钮');
+        // 使用 force: true 强制点击，绕过可能的遮罩层
+        await button.click({ force: true });
+        console.log('[签到] 已点击签到按钮（force模式）');
         return { clicked: true, buttonText: text.trim() };
       }
     } catch (e) {
