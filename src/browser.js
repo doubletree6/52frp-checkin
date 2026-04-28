@@ -520,9 +520,29 @@ async function clickSignButton(page) {
         const text = await button.innerText().catch(() => '');
         console.log(`[签到] 找到按钮 (${strategy.name}): "${text.trim()}"`);
 
-        // 使用 force: true 强制点击，绕过可能的遮罩层
-        await button.click({ force: true });
-        console.log('[签到] 已点击签到按钮（force模式）');
+        // 尝试多种点击方式，确保触发点击处理函数
+        let clicked = false;
+        
+        // 方式1: 直接调用 JavaScript click()
+        try {
+          await button.evaluate(el => el.click());
+          console.log('[签到] 已点击签到按钮（JS evaluate）');
+          clicked = true;
+        } catch (e) {
+          console.log('[签到] JS evaluate 失败，尝试 dispatchEvent');
+          // 方式2: dispatchEvent
+          try {
+            await button.dispatchEvent('click');
+            console.log('[签到] 已点击签到按钮（dispatchEvent）');
+            clicked = true;
+          } catch (e2) {
+            // 方式3: force click 作为最后手段
+            console.log('[签到] dispatchEvent 失败，尝试 force click');
+            await button.click({ force: true });
+            console.log('[签到] 已点击签到按钮（force模式）');
+            clicked = true;
+          }
+        }
         return { clicked: true, buttonText: text.trim() };
       }
     } catch (e) {
