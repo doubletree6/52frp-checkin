@@ -677,8 +677,17 @@ async function pureBrowserCheckIn({
     );
 
     // 显式等待输入框可见，避免元素未渲染导致超时
-    await usernameInput.waitFor({ state: 'visible', timeout: 15_000 });
-    await passwordInput.waitFor({ state: 'visible', timeout: 15_000 });
+    // 如果等待失败，继续尝试填入（Playwright fill本身会等待）
+    try {
+      await usernameInput.waitFor({ state: 'visible', timeout: 30_000 });
+    } catch (e) {
+      console.log('[输入] 等待账号输入框超时，继续尝试填入...');
+    }
+    try {
+      await passwordInput.waitFor({ state: 'visible', timeout: 30_000 });
+    } catch (e) {
+      console.log('[输入] 等待密码输入框超时，继续尝试填入...');
+    }
 
     await usernameInput.fill(username);
     await passwordInput.fill(password);
