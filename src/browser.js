@@ -381,35 +381,46 @@ async function waitForLoginSuccess(page, timeoutMs = 30_000) {
  */
 async function checkSignedToday(page) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
-  const patterns = [
+
+  // 明确文字提示（最可靠）
+  const explicitPatterns = [
     '您今天已经签到过了',
     '今天已经签到过了',
-    '签到成功',
-    '恭喜',
   ];
-
-  for (const pattern of patterns) {
+  for (const pattern of explicitPatterns) {
     if (bodyText.includes(pattern)) {
-      return { signed: true, pattern };
+      return { signed: true, pattern: `页面提示: ${pattern}` };
     }
   }
 
-  const today = getTodaySignDate();
-  const lastSignDateMatch = bodyText.match(/上次签到\s*(\d{4}-\d{2}-\d{2})/);
-  if (lastSignDateMatch?.[1] === today) {
-    return { signed: true, pattern: `上次签到 ${today}` };
+  // 签到成功提示（执行后出现）
+  const successPatterns = ['签到成功', '恭喜获得'];
+  for (const pattern of successPatterns) {
+    if (bodyText.includes(pattern)) {
+      return { signed: true, pattern: `成功提示: ${pattern}` };
+    }
   }
 
-  const signRecordTodayPattern = new RegExp(`签到记录[\\s\\S]{0,800}${today}`);
-  if (signRecordTodayPattern.test(bodyText)) {
-    return { signed: true, pattern: `签到记录 ${today}` };
+  // 检测签到按钮是否存在且可见（关键判断）
+  const signButton = page.getByRole('button', { name: '立即签到' });
+  const buttonVisible = await signButton.isVisible().catch(() => false);
+  const buttonCount = await signButton.count().catch(() => 0);
+
+  if (buttonVisible && buttonCount > 0) {
+    // 签到按钮可见 → 未签到
+    console.log('[签到判断] 检测到「立即签到」按钮可见，判断为未签到');
+    return { signed: false };
   }
 
-  const signedButtonPattern = /(今日已签到|已签到|已经签到)/;
-  if (signedButtonPattern.test(bodyText) && !bodyText.includes('立即签到')) {
-    return { signed: true, pattern: '按钮状态已签到' };
+  // 签到按钮不可见或不存在
+  // 检查是否有替代的「已签到」相关状态文字
+  if (bodyText.includes('已签到') || bodyText.includes('已经签到') || bodyText.includes('今日已签')) {
+    console.log('[签到判断] 签到按钮不可见，页面显示已签到状态');
+    return { signed: true, pattern: '按钮不可见且页面显示已签到' };
   }
 
+  // 默认：按钮不可见但无明确状态，保守判断为未签到，尝试点击
+  console.log('[签到判断] 签到按钮不可见，无明确已签到提示，保守判断为未签到');
   return { signed: false };
 }
 
@@ -664,6 +675,10 @@ async function pureBrowserCheckIn({
     const passwordInput = page.getByPlaceholder(/密码/).or(
       page.locator('input[type="password"]').first()
     );
+
+    // 显式等待输入框可见，避免元素未渲染导致超时
+    await usernameInput.waitFor({ state: 'visible', timeout: 15_000 });
+    await passwordInput.waitFor({ state: 'visible', timeout: 15_000 });
 
     await usernameInput.fill(username);
     await passwordInput.fill(password);
