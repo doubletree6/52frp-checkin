@@ -767,30 +767,63 @@ async function pureBrowserCheckIn({
     console.log('[1/5] 打开登录页...');
     steps.push('open_login');
     await page.goto(LOGIN_PAGE, { waitUntil: 'domcontentloaded' });
-    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
+    // Vue SPA 需要额外等待页面渲染完成
+    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
+    // 等待登录表单渲染（Vue 组件加载）
+    await page.waitForFunction(
+      () => {
+        // 检查是否存在登录相关的输入框或表单元素
+        const inputs = document.querySelectorAll('input');
+        return inputs.length >= 2;
+      },
+      { timeout: 20_000 }
+    ).catch(() => {});
+    await page.waitForTimeout(2000);
 
     // 步骤 2: 输入账号密码
     console.log('[2/5] 输入账号密码...');
     steps.push('fill_credentials');
 
-    const usernameInput = page.getByPlaceholder(/账户|手机号|邮箱|用户名/).or(
-      page.locator('input[type="text"]').first()
-    );
-    const passwordInput = page.getByPlaceholder(/密码/).or(
-      page.locator('input[type="password"]').first()
-    );
+    // 多种方式查找输入框（更稳健）
+    const usernameStrategies = [
+      page.getByPlaceholder(/账户|手机号|邮箱|用户名|账号/),
+      page.locator('input[type="text"]').first(),
+      page.locator('input:not([type="password"])').first(),
+      page.locator('input').first(),
+    ];
+    const passwordStrategies = [
+      page.getByPlaceholder(/密码/),
+      page.locator('input[type="password"]').first(),
+      page.locator('input').filter({ has: page.locator('[class*="password"]') }).first(),
+    ];
 
-    // 显式等待输入框可见，避免元素未渲染导致超时
-    // 如果等待失败，继续尝试填入（Playwright fill本身会等待）
-    try {
-      await usernameInput.waitFor({ state: 'visible', timeout: 30_000 });
-    } catch (e) {
-      console.log('[输入] 等待账号输入框超时，继续尝试填入...');
+    let usernameInput = null;
+    let passwordInput = null;
+
+    for (const strategy of usernameStrategies) {
+      try {
+        if (await strategy.count() > 0) {
+          usernameInput = strategy;
+          break;
+        }
+      } catch {}
     }
-    try {
-      await passwordInput.waitFor({ state: 'visible', timeout: 30_000 });
-    } catch (e) {
-      console.log('[输入] 等待密码输入框超时，继续尝试填入...');
+    for (const strategy of passwordStrategies) {
+      try {
+        if (await strategy.count() > 0) {
+          passwordInput = strategy;
+          break;
+        }
+      } catch {}
+    }
+
+    if (!usernameInput || !passwordInput) {
+      // 截图调试
+      const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
+      if (screenshot) {
+        console.log('[输入] 未找到输入框，页面截图已生成（base64前100字符）:', screenshot.toString('base64').slice(0, 100));
+      }
+      throw new Error('未找到登录输入框，页面可能未正确加载');
     }
 
     await usernameInput.fill(username);
