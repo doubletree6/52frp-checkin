@@ -52,8 +52,15 @@ function formatTrafficCompact(bytes) {
 async function extractSignStats(page) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
 
-  const daysMatch = bodyText.match(/累计签到\s*(\d+)\s*天/);
-  const totalRewardMatch = bodyText.match(/签到获得\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+  // 累计签到天数（多种格式）
+  const daysMatch = bodyText.match(/累计签到\s*[:：]?\s*(\d+)\s*天?/) ||
+                    bodyText.match(/累计\s*(\d+)\s*天/) ||
+                    bodyText.match(/签到\s*(\d+)\s*天/);
+  
+  // 累计签到获得的流量（优先匹配）
+  const totalRewardMatch = bodyText.match(/累计签到\s*[:：]?\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i) ||
+                          bodyText.match(/签到获得\s*[:：]?\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i) ||
+                          bodyText.match(/累计\s*[:：]?\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
 
   const totalSignDays = daysMatch ? Number(daysMatch[1]) : null;
   const totalRewardText = totalRewardMatch ? totalRewardMatch[1].replace(/\s+/g, '') : null;
@@ -382,7 +389,27 @@ async function waitForLoginSuccess(page, timeoutMs = 30_000) {
 async function checkSignedToday(page) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
 
-  // 明确文字提示（最可靠）
+  // 优先检查上次签到日期是否为今天（最可靠）
+  const today = getTodaySignDate();
+  const lastSignMatch = bodyText.match(/上次签到\s*[:：]?\s*(\d{4}-\d{2}-\d{2}|\d{4}\.\d{2}\.\d{2}|\d{2}-\d{2}|\d{2}\.\d{2})/);
+  if (lastSignMatch) {
+    let lastSignDate = lastSignMatch[1];
+    // 处理不同日期格式
+    if (lastSignDate.length === 5) {
+      // MM-DD 或 MM.DD 格式，需要补年份
+      const year = new Date().toLocaleDateString('en-CA', { timeZone: SIGN_DATE_TIMEZONE }).split('-')[0];
+      lastSignDate = `${year}-${lastSignDate.replace('.', '-')}`;
+    } else if (lastSignDate.includes('.')) {
+      // YYYY.MM.DD 格式，转换为 YYYY-MM-DD
+      lastSignDate = lastSignDate.replace('.', '-').replace('.', '-');
+    }
+    if (lastSignDate === today) {
+      console.log(`[签到判断] 上次签到日期为今天 (${today})，判断为已签到`);
+      return { signed: true, pattern: `上次签到日期: ${today}` };
+    }
+  }
+
+  // 明确文字提示（可靠）
   const explicitPatterns = [
     '您今天已经签到过了',
     '今天已经签到过了',

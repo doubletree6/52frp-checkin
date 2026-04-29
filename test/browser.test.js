@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const { clickSignButton, checkSignedToday, inferSignStateFromRequest } = require('../src/browser');
+const { clickSignButton, checkSignedToday, inferSignStateFromRequest, extractSignStats, extractDashboardStats, buildResultTemplate, trafficTextToBytes, formatTrafficCompact } = require('../src/browser');
 
 async function withPage(fn) {
   const browser = await chromium.launch({ headless: true });
@@ -102,4 +102,32 @@ test('inferSignStateFromRequest treats API success copy as signed', () => {
   });
 
   assert.equal(result.signed, true);
+});
+
+test('extractSignStats extracts total reward from “累计签到 X.XX GB” format', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <div>
+        <div>累计签到 2.12 GB</div>
+        <div>签到获得 595.31 MB</div>
+        <div>可用流量 172.42 MB</div>
+      </div>
+    `);
+
+    const stats = await extractSignStats(page);
+
+    assert.equal(stats.totalRewardText, '2.12GB');
+    assert.ok(stats.totalRewardBytes > 0);
+  });
+});
+
+test('buildResultTemplate handles missing values with placeholders', () => {
+  const signStats = { totalSignDays: null, totalRewardBytes: 2.12 * 1024 ** 3 };
+  const dashboardStats = { todayRewardBytes: null, remainingBytes: 101 * 1024 ** 3 };
+
+  const template = buildResultTemplate(signStats, dashboardStats);
+
+  // Should use 'x' for missing days, 'xM' for missing today reward
+  assert.ok(template.startsWith('x:'));
+  assert.ok(template.includes('xM'));
 });
