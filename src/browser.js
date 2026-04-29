@@ -744,12 +744,18 @@ async function pureBrowserCheckIn({
   const browser = await chromium.launch({
     headless: resolveHeadless(),
     channel: resolveChannel(),
-    args: process.platform === 'linux' ? ['--no-sandbox'] : [],
+    args: process.platform === 'linux' ? ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'] : [],
     ...launchOptions,
   });
 
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    extraHTTPHeaders: {
+      'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+    },
+    ignoreHTTPSErrors: true,
   });
 
   const page = await context.newPage();
@@ -766,7 +772,24 @@ async function pureBrowserCheckIn({
     // 步骤 1: 打开登录页
     console.log('[1/5] 打开登录页...');
     steps.push('open_login');
-    await page.goto(LOGIN_PAGE, { waitUntil: 'domcontentloaded' });
+    
+    // 多次尝试加载页面（应对 HTTP 响应异常）
+    let gotoAttempts = 0;
+    const maxGotoAttempts = 3;
+    while (gotoAttempts < maxGotoAttempts) {
+      try {
+        await page.goto(LOGIN_PAGE, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+        break;
+      } catch (gotoErr) {
+        gotoAttempts++;
+        console.log(`[页面] 加载失败 (尝试 ${gotoAttempts}/${maxGotoAttempts}): ${gotoErr.message}`);
+        if (gotoAttempts >= maxGotoAttempts) {
+          throw gotoErr;
+        }
+        await page.waitForTimeout(3000);
+      }
+    }
+    
     // Vue SPA 需要额外等待页面渲染完成
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
     // 等待登录表单渲染（Vue 组件加载）
