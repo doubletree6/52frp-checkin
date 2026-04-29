@@ -104,6 +104,16 @@ test('inferSignStateFromRequest treats API success copy as signed', () => {
   assert.equal(result.signed, true);
 });
 
+test('inferSignStateFromRequest does not treat success=false JSON field name as signed', () => {
+  const result = inferSignStateFromRequest({
+    seen: true,
+    text: JSON.stringify({ success: false, message: '签到失败，请稍后重试' }),
+    json: { success: false, message: '签到失败，请稍后重试' },
+  });
+
+  assert.equal(result.signed, false);
+});
+
 test('extractSignStats extracts total reward from “累计签到 X.XX GB” format', async () => {
   await withPage(async (page) => {
     await page.setContent(`
@@ -118,6 +128,28 @@ test('extractSignStats extracts total reward from “累计签到 X.XX GB” for
 
     assert.equal(stats.totalRewardText, '2.12GB');
     assert.ok(stats.totalRewardBytes > 0);
+  });
+});
+
+test('extractSignStats extracts actual sign page line-before-label format', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <div>
+        <div>9 天</div>
+        <div>累计签到</div>
+        <div>2.97 GB</div>
+        <div>签到获得</div>
+        <div>1.21 GB</div>
+        <div>可用流量</div>
+        <div>上次签到</div>
+        <div>2026-04-29</div>
+      </div>
+    `);
+
+    const stats = await extractSignStats(page);
+
+    assert.equal(stats.totalSignDays, 9);
+    assert.equal(stats.totalRewardText, '2.97GB');
   });
 });
 

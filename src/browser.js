@@ -49,21 +49,45 @@ function formatTrafficCompact(bytes) {
   return `${Math.round(bytes)}B`;
 }
 
+function getBodyLines(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function getValueBeforeLabel(text, label) {
+  const lines = getBodyLines(text);
+  const labelIndex = lines.findIndex((line) => line === label || line.includes(label));
+  if (labelIndex > 0) {
+    return lines[labelIndex - 1];
+  }
+  return null;
+}
+
+function normalizeTrafficText(value) {
+  return value ? String(value).replace(/\s+/g, '') : null;
+}
+
 async function extractSignStats(page) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
 
   // 累计签到天数（多种格式）
-  const daysMatch = bodyText.match(/累计签到\s*[:：]?\s*(\d+)\s*天?/) ||
+  const daysMatch = bodyText.match(/累计签到\s*[:：]?\s*(\d+)\s*天/) ||
                     bodyText.match(/累计\s*(\d+)\s*天/) ||
                     bodyText.match(/签到\s*(\d+)\s*天/);
+  const daysBeforeLabel = getValueBeforeLabel(bodyText, '累计签到');
+  const daysBeforeLabelMatch = daysBeforeLabel ? daysBeforeLabel.match(/(\d+)\s*天?/) : null;
   
   // 累计签到获得的流量（优先匹配）
   const totalRewardMatch = bodyText.match(/累计签到\s*[:：]?\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i) ||
                           bodyText.match(/签到获得\s*[:：]?\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i) ||
                           bodyText.match(/累计\s*[:：]?\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+  const rewardBeforeLabel = getValueBeforeLabel(bodyText, '签到获得');
+  const rewardBeforeLabelMatch = rewardBeforeLabel ? rewardBeforeLabel.match(/([\d.]+\s*(?:TB|GB|MB|KB|B))/i) : null;
 
-  const totalSignDays = daysMatch ? Number(daysMatch[1]) : null;
-  const totalRewardText = totalRewardMatch ? totalRewardMatch[1].replace(/\s+/g, '') : null;
+  const totalSignDays = daysMatch ? Number(daysMatch[1]) : (daysBeforeLabelMatch ? Number(daysBeforeLabelMatch[1]) : null);
+  const totalRewardText = normalizeTrafficText(totalRewardMatch ? totalRewardMatch[1] : (rewardBeforeLabelMatch ? rewardBeforeLabelMatch[1] : null));
 
   return {
     totalSignDays,
@@ -547,30 +571,53 @@ async function clickSignButton(page) {
         const text = await button.innerText().catch(() => '');
         console.log(`[签到] 找到按钮 (${strategy.name}): "${text.trim()}"`);
 
-        // 尝试多种点击方式，确保触发点击处理函数
+        // 尝试多种点击方式，优先使用 Playwright 真实指针点击。
+        // 52frp 的签到会依赖页面先获取 slider-token，再由真实按钮事件提交。
+        // JS evaluate click() 在 GitHub Actions 中曾触发 /user/sign，但服务端返回
+        // “签到失败，请稍后重试”，所以只能作为最后 fallback。
         let clicked = false;
         
-        // 方式1: 直接调用 JavaScript click()
+        // 方式1: 真实点击
         try {
-          await button.evaluate(el => el.click());
-          console.log('[签到] 已点击签到按钮（JS evaluate）');
+          await button.scrollIntoViewIfNeeded().catch(() => {});
+          await button.click({ timeout: 30_000 });
+          console.log('[签到] 已点击签到按钮（真实点击）');
           clicked = true;
         } catch (e) {
-          console.log('[签到] JS evaluate 失败，尝试 dispatchEvent');
-          // 方式2: dispatchEvent
+          console.log('[签到] 真实点击失败，尝试 force click:', e.message);
+        }
+
+        // 方式2: force click
+        if (!clicked) {
           try {
-            await button.dispatchEvent('click');
-            console.log('[签到] 已点击签到按钮（dispatchEvent）');
-            clicked = true;
-          } catch (e2) {
-            // 方式3: force click 作为最后手段
-            console.log('[签到] dispatchEvent 失败，尝试 force click');
             await button.click({ force: true });
             console.log('[签到] 已点击签到按钮（force模式）');
             clicked = true;
+          } catch (e) {
+            console.log('[签到] force click 失败，尝试 JS evaluate:', e.message);
           }
         }
-        return { clicked: true, buttonText: text.trim() };
+
+        // 方式3: 直接调用 JavaScript click()，只作为最后兜底
+        if (!clicked) {
+          try {
+            await button.evaluate(el => el.click());
+            console.log('[签到] 已点击签到按钮（JS evaluate）');
+            clicked = true;
+          } catch (e) {
+            console.log('[签到] JS evaluate 失败，尝试 dispatchEvent');
+            // 方式4: dispatchEvent
+            try {
+              await button.dispatchEvent('click');
+              console.log('[签到] 已点击签到按钮（dispatchEvent）');
+              clicked = true;
+            } catch (e2) {
+              console.log('[签到] dispatchEvent 也失败:', e2.message);
+            }
+          }
+        }
+
+        return { clicked, buttonText: text.trim() };
       }
     } catch (e) {
       console.log(`[签到] 策略 ${strategy.name} 失败: ${e.message}`);
@@ -644,17 +691,26 @@ async function waitForSignRequest(page, timeoutMs = 15_000) {
 function inferSignStateFromRequest(signRequest) {
   if (!signRequest?.seen) return { signed: false };
 
-  const raw = [
-    signRequest.text,
-    signRequest.json ? JSON.stringify(signRequest.json) : '',
-  ].filter(Boolean).join('\n');
+  const json = signRequest.json || null;
+  const message = json
+    ? String(json.message || json.msg || json.error || json.detail || '')
+    : '';
+  const raw = message || String(signRequest.text || '');
+
+  if (/签到失败|失败|稍后重试|错误|error/i.test(raw)) {
+    return { signed: false, pattern: '接口返回失败' };
+  }
 
   if (/今天已经签到过了|您今天已经签到过了|已签到|已经签到/i.test(raw)) {
     return { signed: true, pattern: '接口返回已签到' };
   }
 
-  if (/签到成功|success|成功|恭喜/i.test(raw)) {
+  if (/签到成功|成功|恭喜/i.test(raw)) {
     return { signed: true, pattern: '接口返回签到成功' };
+  }
+
+  if (json && (json.success === true || json.status === 200 || json.code === 200)) {
+    return { signed: true, pattern: '接口返回成功状态码' };
   }
 
   return { signed: false };
