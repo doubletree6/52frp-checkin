@@ -23,8 +23,8 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+      - name: Install Playwright Edge
+        run: npx playwright install --with-deps msedge
 
       - name: Run check-in
         id: checkin
@@ -32,7 +32,8 @@ jobs:
           FRP_USERNAME: ${{ secrets.FRP_USERNAME }}
           FRP_PASSWORD: ${{ secrets.FRP_PASSWORD }}
           FRP_BROWSER_HEADLESS: 'true'
-          FRP_BROWSER_CHANNEL: chromium
+          FRP_BROWSER_CHANNEL: msedge
+          FRP_DEBUG_DIR: debug-artifacts
         run: |
           set +e
           output=$(node checkin.js 2>&1)
@@ -54,6 +55,14 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
           exit $status
+
+      - name: Upload debug artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: 52frp-debug-artifacts
+          path: debug-artifacts/
+          if-no-files-found: ignore
 
       - name: PushPlus notification
         if: always()

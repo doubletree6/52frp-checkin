@@ -9,6 +9,8 @@
  * 5. 检查签到结果并返回
  */
 
+const fs = require('node:fs/promises');
+const path = require('node:path');
 const { chromium } = require('playwright');
 
 const LOGIN_PAGE = 'https://www.52frp.com/user/#/auth/login';
@@ -67,6 +69,25 @@ function getValueBeforeLabel(text, label) {
 
 function normalizeTrafficText(value) {
   return value ? String(value).replace(/\s+/g, '') : null;
+}
+
+async function saveDebugArtifacts(page, label) {
+  const dir = process.env.FRP_DEBUG_DIR || 'debug-artifacts';
+  await fs.mkdir(dir, { recursive: true }).catch(() => {});
+
+  const safeLabel = String(label || 'debug').replace(/[^a-zA-Z0-9_.-]+/g, '-');
+  const base = path.join(dir, safeLabel);
+
+  const url = page.url();
+  const html = await page.content().catch((error) => `<!-- failed to read content: ${error.message} -->`);
+  const text = await page.locator('body').innerText().catch((error) => `failed to read body text: ${error.message}`);
+
+  await fs.writeFile(`${base}.url.txt`, `${url}\n`).catch(() => {});
+  await fs.writeFile(`${base}.html`, html).catch(() => {});
+  await fs.writeFile(`${base}.txt`, text).catch(() => {});
+  await page.screenshot({ path: `${base}.png`, fullPage: true }).catch(() => {});
+
+  console.log(`[调试] 已保存页面调试文件: ${base}.{png,html,txt,url.txt}`);
 }
 
 async function extractSignStats(page) {
@@ -841,11 +862,7 @@ async function pureBrowserCheckIn({
     }
 
     if (!usernameInput || !passwordInput) {
-      // 截图调试
-      const screenshot = await page.screenshot({ fullPage: false }).catch(() => null);
-      if (screenshot) {
-        console.log('[输入] 未找到输入框，页面截图已生成（base64前100字符）:', screenshot.toString('base64').slice(0, 100));
-      }
+      await saveDebugArtifacts(page, 'login-inputs-not-found');
       throw new Error('未找到登录输入框，页面可能未正确加载');
     }
 
