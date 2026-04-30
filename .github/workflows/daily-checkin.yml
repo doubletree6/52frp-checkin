@@ -9,30 +9,32 @@ on:
 jobs:
   checkin:
     runs-on: ubuntu-latest
+    container:
+      image: mcr.microsoft.com/playwright:v1.55.0-jammy
+      options: --user root --shm-size=2gb
+    env:
+      DISPLAY: :99
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          cache: npm
-
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright Edge
-        run: npx playwright install --with-deps msedge
+      - name: Start Xvfb (virtual display for headful browser)
+        run: |
+          Xvfb :99 -screen 0 1920x1080x24 -ac &
+          sleep 2
+          echo "Xvfb started on display :99"
 
-      - name: Run check-in
+      - name: Run check-in (headful mode via Xvfb)
         id: checkin
         env:
           FRP_USERNAME: ${{ secrets.FRP_USERNAME }}
           FRP_PASSWORD: ${{ secrets.FRP_PASSWORD }}
-          FRP_BROWSER_HEADLESS: 'true'
-          FRP_BROWSER_CHANNEL: msedge
+          FRP_BROWSER_HEADLESS: 'false'
+          FRP_BROWSER_CHANNEL: chromium
           FRP_DEBUG_DIR: debug-artifacts
         run: |
           set +e
