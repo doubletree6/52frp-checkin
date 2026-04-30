@@ -689,11 +689,15 @@ async function waitForSignRequest(page, timeoutMs = 15_000) {
     } catch {}
 
     console.log(`[签到] 捕获签到请求: ${response.status()} ${response.url()}`);
+    console.log(`[签到] 响应原文（前500字符）: ${text.slice(0, 500)}`);
     if (json) {
-      const message = json.message || json.msg || json.error || json.detail;
+      console.log(`[签到] 响应 JSON: ${JSON.stringify(json).slice(0, 500)}`);
+      const message = json.message || json.msg || json.error || json.detail || json.info || json.result;
       if (message) {
-        console.log(`[签到] 接口返回: ${message}`);
+        console.log(`[签到] 接口返回消息: ${message}`);
       }
+    } else {
+      console.log(`[签到] 响应无法解析为 JSON，原文前200字符: ${text.slice(0, 200)}`);
     }
 
     return {
@@ -730,8 +734,10 @@ function inferSignStateFromRequest(signRequest) {
     return { signed: true, pattern: '接口返回签到成功' };
   }
 
-  if (json && (json.success === true || json.status === 200 || json.code === 200)) {
-    return { signed: true, pattern: '接口返回成功状态码' };
+  // 如果响应码为 200 且有 data 字段，且无明确失败消息，视为可能成功
+  if (signRequest.status === 200 && json && json.data && !/失败|error|错误|稍后重试/i.test(text)) {
+    console.log(`[签到] 检测到 200 + data 字段，视为可能成功`);
+    return { signed: true, pattern: '接口返回 200 且有 data 字段' };
   }
 
   return { signed: false };
