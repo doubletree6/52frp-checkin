@@ -788,6 +788,17 @@ async function pureBrowserCheckIn({
   const page = await context.newPage();
   page.setDefaultTimeout(timeoutMs);
 
+  // 收集 JS 控制台错误，用于诊断 Vue SPA 渲染失败
+  const jsErrors = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      jsErrors.push(msg.text());
+    }
+  });
+  page.on('pageerror', (err) => {
+    jsErrors.push(`[pageerror] ${err.message}`);
+  });
+
   const steps = [];
   let loginSuccess = false;
   let sliderHandled = false;
@@ -795,40 +806,91 @@ async function pureBrowserCheckIn({
   let dashboardStats = null;
   let beforeStats = null;
 
-  try {
-    // 步骤 1: 打开登录页
-    console.log('[1/5] 打开登录页...');
-    steps.push('open_login');
-    
-    // 多次尝试加载页面（应对 HTTP 响应异常）
-    let gotoAttempts = 0;
-    const maxGotoAttempts = 3;
-    while (gotoAttempts < maxGotoAttempts) {
-      try {
-        await page.goto(LOGIN_PAGE, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-        break;
-      } catch (gotoErr) {
-        gotoAttempts++;
-        console.log(`[页面] 加载失败 (尝试 ${gotoAttempts}/${maxGotoAttempts}): ${gotoErr.message}`);
-        if (gotoAttempts >= maxGotoAttempts) {
-          throw gotoErr;
+  /**
+   * 加载登录页并等待 Vue SPA 完成渲染。
+   * 如果 Vue 未渲染（body 为空），自动重试（重载页面）。
+   */
+  async function loadLoginPageWithRetry(maxRetries = 4) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const backoffMs = (attempt - 1) * 4000; // 0, 4s, 8s, 12s
+      if (attempt > 1) {
+        console.log(`[页面] 第 ${attempt} 次重试加载登录页（等待 ${backoffMs / 1000}s）...`);
+        await page.waitForTimeout(backoffMs);
+      }
+
+      // 第一步：加载页面 HTML
+      let gotoOk = false;
+      for (let gt = 0; gt < 3; gt++) {
+        try {
+          await page.goto(LOGIN_PAGE, {
+            waitUntil: 'domcontentloaded',
+            timeout: 90_000,
+          });
+          gotoOk = true;
+          break;
+        } catch (gotoErr) {
+          console.log(`[页面] goto 失败 (尝试 ${gt + 1}/3): ${gotoErr.message}`);
+          if (gt < 2) await page.waitForTimeout(3000);
         }
-        await page.waitForTimeout(3000);
+      }
+      if (!gotoOk) {
+        if (attempt < maxRetries) continue;
+        throw new Error('登录页加载失败：多次 goto 均失败');
+      }
+
+      // 第二步：等待网络空闲 + Vue 渲染
+      await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
+
+      // 第三步：检测 Vue 是否真正渲染（用 body 文本长度，而非仅 input 数量）
+      let vueRendered = false;
+      try {
+        await page.waitForFunction(
+          () => {
+            const text = (document.body?.innerText || '').trim();
+            // 登录页至少应该显示"登录"字样和表单内容
+            return text.length > 20 && (
+              text.includes('登录') || text.includes('账号') || text.includes('账户')
+            );
+          },
+          { timeout: 25_000 }
+        );
+        vueRendered = true;
+      } catch {
+        // waitForFunction 超时
+      }
+
+      // 额外等待确保 Vue 组件完全挂载
+      await page.waitForTimeout(1500);
+
+      if (vueRendered) {
+        console.log(`[页面] Vue 渲染成功 (attempt ${attempt}/${maxRetries})`);
+        return;
+      }
+
+      // Vue 未渲染 —— 保存调试信息并重试
+      const bodyLen = (await page.locator('body').innerText().catch(() => '')).length;
+      console.log(`[页面] Vue 未渲染 (body 文本长度=${bodyLen}, attempt ${attempt}/${maxRetries})`);
+
+      if (jsErrors.length > 0) {
+        const unique = [...new Set(jsErrors)].slice(0, 5);
+        console.log(`[页面] JS 错误 (${jsErrors.length} 条, 去重前5): ${unique.join(' | ')}`);
+      }
+
+      if (attempt === maxRetries) {
+        await saveDebugArtifacts(page, `login-vue-not-rendered-attempt${attempt}`);
+        const errDetail = jsErrors.length > 0
+          ? `（JS 错误: ${[...new Set(jsErrors)].slice(0, 3).join('; ')}）`
+          : '';
+        throw new Error(`登录页 Vue 应用未渲染，已重试 ${maxRetries} 次${errDetail}`);
       }
     }
-    
-    // Vue SPA 需要额外等待页面渲染完成
-    await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-    // 等待登录表单渲染（Vue 组件加载）
-    await page.waitForFunction(
-      () => {
-        // 检查是否存在登录相关的输入框或表单元素
-        const inputs = document.querySelectorAll('input');
-        return inputs.length >= 2;
-      },
-      { timeout: 20_000 }
-    ).catch(() => {});
-    await page.waitForTimeout(2000);
+  }
+
+  try {
+    // 步骤 1: 打开登录页（含 Vue 渲染检测和自动重试）
+    console.log('[1/5] 打开登录页...');
+    steps.push('open_login');
+    await loadLoginPageWithRetry();
 
     // 步骤 2: 输入账号密码
     console.log('[2/5] 输入账号密码...');
@@ -949,54 +1011,98 @@ async function pureBrowserCheckIn({
       };
     }
 
-    // 步骤 5: 点击签到
+    // 步骤 5: 点击签到（含重试逻辑，应对 API 返回 "签到失败，请稍后重试"）
     console.log('[5/5] 点击签到按钮...');
     steps.push('click_sign');
 
-    const signRequestPromise = waitForSignRequest(page);
-    const clickResult = await clickSignButton(page);
+    const MAX_SIGN_RETRIES = 3;
+    let signRequest = { seen: false };
+    let afterCheck = { signed: false };
+    let requestCheck = { signed: false };
+    let afterStats = beforeStats;
+    let signRetries = 0;
 
-    if (!clickResult.clicked) {
-      // 打印页面内容用于调试
-      const bodyText = await page.locator('body').innerText().catch(() => '');
-      console.log('[签到] 页面内容预览:', bodyText.substring(0, 500));
-      throw new Error('未找到签到按钮');
-    }
-
-    // 点击成功后，检测并处理可能出现的签到滑块验证
-    console.log('[签到] 准备检测签到滑块...');
-    await page.waitForTimeout(1500);
-    const signSliderResult = await handleSliderVerification(page, 20_000);
-    console.log('[签到] 滑块检测完成, handled:', signSliderResult.handled, 'success:', signSliderResult.success);
-    if (signSliderResult.handled) {
-      console.log('[签到滑块] 处理结果:', signSliderResult.success ? '验证通过' : '验证失败');
-      // 滑块验证通过后，可能需要再次触发签到（某些站点设计）
-      if (signSliderResult.success) {
+    while (signRetries < MAX_SIGN_RETRIES) {
+      if (signRetries > 0) {
+        console.log(`[签到] 第 ${signRetries + 1}/${MAX_SIGN_RETRIES} 次重试签到...`);
+        // 重新加载签到页获取新的 slider_token
+        await page.goto(SIGN_PAGE, { waitUntil: 'domcontentloaded' });
+        await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
         await page.waitForTimeout(2000);
-        // 检查是否还有签到按钮需要再次点击
-        const stillHasSignButton = await page.getByRole('button', { name: '立即签到' }).count();
-        if (stillHasSignButton > 0) {
-          console.log('[签到] 滑块验证后再次点击签到按钮...');
-          await dismissBlockingOverlays(page);
-          await page.getByRole('button', { name: '立即签到' }).first().click().catch(() => {});
-          await page.waitForTimeout(1500);
+        await dismissBlockingOverlays(page);
+        // 重新检查是否已签到
+        const retryBeforeCheck = await checkSignedToday(page);
+        if (retryBeforeCheck.signed) {
+          console.log(`[签到] 重试时发现已签到: ${retryBeforeCheck.pattern}`);
+          afterStats = await extractSignStats(page);
+          return {
+            status: 'already_signed',
+            message: buildResultTemplate(afterStats, dashboardStats),
+            details: { steps, loginSuccess, sliderHandled, signStats: afterStats, dashboardStats, template: buildResultTemplate(afterStats, dashboardStats) },
+          };
         }
       }
+
+      const signRequestPromise = waitForSignRequest(page);
+      const clickResult = await clickSignButton(page);
+
+      if (!clickResult.clicked) {
+        if (signRetries + 1 < MAX_SIGN_RETRIES) {
+          console.log('[签到] 未找到签到按钮，将重试...');
+          signRetries++;
+          continue;
+        }
+        const bodyText = await page.locator('body').innerText().catch(() => '');
+        console.log('[签到] 页面内容预览:', bodyText.substring(0, 500));
+        throw new Error('未找到签到按钮');
+      }
+
+      // 点击成功后，检测并处理可能出现的签到滑块验证
+      console.log('[签到] 准备检测签到滑块...');
+      await page.waitForTimeout(1500);
+      const signSliderResult = await handleSliderVerification(page, 20_000);
+      console.log('[签到] 滑块检测完成, handled:', signSliderResult.handled, 'success:', signSliderResult.success);
+      if (signSliderResult.handled) {
+        console.log('[签到滑块] 处理结果:', signSliderResult.success ? '验证通过' : '验证失败');
+        if (signSliderResult.success) {
+          await page.waitForTimeout(2000);
+          const stillHasSignButton = await page.getByRole('button', { name: '立即签到' }).count();
+          if (stillHasSignButton > 0) {
+            console.log('[签到] 滑块验证后再次点击签到按钮...');
+            await dismissBlockingOverlays(page);
+            await page.getByRole('button', { name: '立即签到' }).first().click().catch(() => {});
+            await page.waitForTimeout(1500);
+          }
+        }
+      }
+
+      await dismissBlockingOverlays(page);
+      await page.waitForTimeout(1000);
+
+      signRequest = await signRequestPromise;
+      await waitForSignResult(page);
+
+      afterCheck = await checkSignedToday(page);
+      requestCheck = inferSignStateFromRequest(signRequest);
+      afterStats = await extractSignStats(page);
+
+      // 判断是否需要重试
+      if (afterCheck.signed || requestCheck.signed) {
+        break; // 成功，退出重试循环
+      }
+
+      // 检查 API 是否返回了可重试的错误
+      const apiMsg = signRequest?.json?.message || '';
+      if (/签到失败|稍后重试|失败/i.test(apiMsg)) {
+        console.log(`[签到] API 返回: "${apiMsg}"，准备重试 (${signRetries + 1}/${MAX_SIGN_RETRIES})`);
+        signRetries++;
+        continue;
+      }
+
+      // 未检测到明确成功/失败 → 也重试
+      console.log(`[签到] 未检测到明确结果，准备重试 (${signRetries + 1}/${MAX_SIGN_RETRIES})`);
+      signRetries++;
     }
-
-    // 关闭签到成功后可能弹出的公告遮罩
-    await dismissBlockingOverlays(page);
-    await page.waitForTimeout(1000);
-
-    const signRequest = await signRequestPromise;
-
-    // 等待结果
-    await waitForSignResult(page);
-
-    // 检查最终状态
-    const afterCheck = await checkSignedToday(page);
-    const requestCheck = inferSignStateFromRequest(signRequest);
-    const afterStats = await extractSignStats(page);
 
     let afterDashboardStats = dashboardStats;
     if (dashboardUrl) {
