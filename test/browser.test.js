@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { chromium } = require('playwright');
 const { clickSignButton, clickLoginButton, checkSignedToday, inferSignStateFromRequest, extractSignStats, extractDashboardStats, buildResultTemplate, trafficTextToBytes, formatTrafficCompact, isLoginPageRenderedText } = require('../src/browser');
 
@@ -142,6 +144,12 @@ test('clickLoginButton clicks English login button', async () => {
     assert.equal(result.clicked, true);
     assert.equal(await page.evaluate(() => window.__loginClicked === true), true);
   });
+});
+
+test('login flow does not reference stale loginButton locator after slider', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/browser.js'), 'utf8');
+
+  assert.doesNotMatch(source, /loginButton\.click\(/);
 });
 
 test('extractSignStats extracts total reward from “累计签到 X.XX GB” format', async () => {

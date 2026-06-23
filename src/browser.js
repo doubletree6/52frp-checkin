@@ -1020,7 +1020,11 @@ async function pureBrowserCheckIn({
     // 滑块验证通过后，再次点击登录按钮完成登录
     if (sliderResult.handled && sliderResult.success) {
       console.log('[登录] 滑块验证通过，再次点击登录...');
-      await loginButton.click();
+      const retryLoginClickResult = await clickLoginButton(page);
+      if (!retryLoginClickResult.clicked) {
+        await saveDebugArtifacts(page, 'login-button-not-found-after-slider');
+        throw new Error('滑块验证通过后未找到登录按钮');
+      }
       await page.waitForTimeout(2000);
     }
 
