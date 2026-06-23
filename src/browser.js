@@ -17,6 +17,24 @@ const LOGIN_PAGE = 'https://www.52frp.com/user/#/auth/login';
 const SIGN_PAGE = 'https://www.52frp.com/user/#/welfare/sign';
 const DEFAULT_TIMEOUT_MS = 60_000;
 const SIGN_DATE_TIMEZONE = 'Asia/Shanghai';
+const LOGIN_PAGE_RENDER_PATTERNS = [
+  { source: '登录|账号|账户' },
+  { source: 'Account\\s*Login', flags: 'i' },
+  { source: 'Please enter (?:account|your password)', flags: 'i' },
+  { source: 'Please slide to verify', flags: 'i' },
+  { source: '\\bRemember password\\b', flags: 'i' },
+  { source: '\\bForgot password\\b', flags: 'i' },
+  { source: '\\bLogin\\b', flags: 'i' },
+];
+
+function isLoginPageRenderedText(text) {
+  const normalized = String(text || '').replace(/\s+/g, ' ').trim();
+  if (normalized.length <= 20) return false;
+
+  return LOGIN_PAGE_RENDER_PATTERNS.some(({ source, flags = '' }) => (
+    new RegExp(source, flags).test(normalized)
+  ));
+}
 
 function getTodaySignDate() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -845,13 +863,15 @@ async function pureBrowserCheckIn({
       let vueRendered = false;
       try {
         await page.waitForFunction(
-          () => {
-            const text = (document.body?.innerText || '').trim();
-            // 登录页至少应该显示"登录"字样和表单内容
-            return text.length > 20 && (
-              text.includes('登录') || text.includes('账号') || text.includes('账户')
-            );
+          (patterns) => {
+            const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+            if (text.length <= 20) return false;
+
+            return patterns.some(({ source, flags = '' }) => (
+              new RegExp(source, flags).test(text)
+            ));
           },
+          LOGIN_PAGE_RENDER_PATTERNS,
           { timeout: 25_000 }
         );
         vueRendered = true;
@@ -1170,6 +1190,7 @@ module.exports = {
   loadDashboardStats,
   waitForDashboardStats,
   formatTrafficCompact,
+  isLoginPageRenderedText,
   trafficTextToBytes,
   waitForLoginSuccess,
   waitForSignResult,

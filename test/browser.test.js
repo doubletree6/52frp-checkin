@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const { clickSignButton, checkSignedToday, inferSignStateFromRequest, extractSignStats, extractDashboardStats, buildResultTemplate, trafficTextToBytes, formatTrafficCompact } = require('../src/browser');
+const { clickSignButton, checkSignedToday, inferSignStateFromRequest, extractSignStats, extractDashboardStats, buildResultTemplate, trafficTextToBytes, formatTrafficCompact, isLoginPageRenderedText } = require('../src/browser');
 
 async function withPage(fn) {
   const browser = await chromium.launch({ headless: true });
@@ -112,6 +112,21 @@ test('inferSignStateFromRequest does not treat success=false JSON field name as 
   });
 
   assert.equal(result.signed, false);
+});
+
+test('isLoginPageRenderedText accepts English 52frp login page copy', () => {
+  const text = `
+    52frp Panel
+    Login
+    AccountLogin
+    Please slide to verify
+    Remember password
+    Forgot password
+    Login
+    No account yet?Register
+  `;
+
+  assert.equal(isLoginPageRenderedText(text), true);
 });
 
 test('extractSignStats extracts total reward from “累计签到 X.XX GB” format', async () => {
