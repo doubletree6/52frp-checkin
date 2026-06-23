@@ -69,10 +69,17 @@ function formatTrafficCompact(bytes) {
   return `${Math.round(bytes)}B`;
 }
 
+function cleanBodyLine(line) {
+  return String(line || '')
+    .replace(/\[MT\]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function getBodyLines(text) {
   return String(text || '')
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map(cleanBodyLine)
     .filter(Boolean);
 }
 
@@ -87,6 +94,77 @@ function getValueBeforeLabel(text, label) {
 
 function normalizeTrafficText(value) {
   return value ? String(value).replace(/\s+/g, '') : null;
+}
+
+function parseTrafficAtLine(lines, index) {
+  const line = lines[index] || '';
+  const trafficMatch = line.match(/([\d.]+)\s*(TB|GB|MB|KB|B)/i);
+  if (trafficMatch) {
+    return normalizeTrafficText(`${trafficMatch[1]}${trafficMatch[2]}`);
+  }
+
+  const numberOnly = line.match(/^([\d.]+)$/);
+  const nextUnit = lines[index + 1]?.match(/^(TB|GB|MB|KB|B)$/i);
+  if (numberOnly && nextUnit) {
+    return normalizeTrafficText(`${numberOnly[1]}${nextUnit[1]}`);
+  }
+
+  const unitOnly = line.match(/^(TB|GB|MB|KB|B)$/i);
+  const previousNumber = lines[index - 1]?.match(/^([\d.]+)$/);
+  if (unitOnly && previousNumber) {
+    return normalizeTrafficText(`${previousNumber[1]}${unitOnly[1]}`);
+  }
+
+  return null;
+}
+
+function lineMatchesAny(line, patterns) {
+  return patterns.some((pattern) => {
+    if (pattern instanceof RegExp) {
+      pattern.lastIndex = 0;
+      return pattern.test(line);
+    }
+    return line.includes(pattern);
+  });
+}
+
+function findNumberNearLabel(lines, labelPatterns, order = ['after', 'before']) {
+  const offsets = [1, 2, 3];
+  for (let index = 0; index < lines.length; index++) {
+    if (!lineMatchesAny(lines[index], labelPatterns)) continue;
+
+    for (const direction of order) {
+      for (const offset of offsets) {
+        const targetIndex = direction === 'after' ? index + offset : index - offset;
+        const match = lines[targetIndex]?.match(/(\d+)\s*(?:天|day|days)?\b/i);
+        if (match) return Number(match[1]);
+      }
+    }
+  }
+
+  return null;
+}
+
+function findTrafficNearLabel(lines, labelPatterns, order = ['after', 'before']) {
+  const offsets = [1, 2, 3];
+  const candidates = [];
+
+  for (let index = 0; index < lines.length; index++) {
+    if (!lineMatchesAny(lines[index], labelPatterns)) continue;
+
+    for (const direction of order) {
+      for (const offset of offsets) {
+        const targetIndex = direction === 'after' ? index + offset : index - offset;
+        const traffic = parseTrafficAtLine(lines, targetIndex);
+        if (traffic) {
+          candidates.push(traffic);
+        }
+      }
+      if (candidates.length > 0) break;
+    }
+  }
+
+  return candidates;
 }
 
 async function saveDebugArtifacts(page, label) {
@@ -110,6 +188,7 @@ async function saveDebugArtifacts(page, label) {
 
 async function extractSignStats(page) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
+  const lines = getBodyLines(bodyText);
 
   // 累计签到天数（多种格式）
   const daysMatch = bodyText.match(/累计签到\s*[:：]?\s*(\d+)\s*天/) ||
@@ -117,6 +196,7 @@ async function extractSignStats(page) {
                     bodyText.match(/签到\s*(\d+)\s*天/);
   const daysBeforeLabel = getValueBeforeLabel(bodyText, '累计签到');
   const daysBeforeLabelMatch = daysBeforeLabel ? daysBeforeLabel.match(/(\d+)\s*天?/) : null;
+  const daysNearLabel = findNumberNearLabel(lines, [/累计(?:签到|Check-in)/i], ['after', 'before']);
   
   // 累计签到获得的流量（优先匹配）
   const totalRewardMatch = bodyText.match(/累计签到\s*[:：]?\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i) ||
@@ -124,9 +204,10 @@ async function extractSignStats(page) {
                           bodyText.match(/累计\s*[:：]?\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
   const rewardBeforeLabel = getValueBeforeLabel(bodyText, '签到获得');
   const rewardBeforeLabelMatch = rewardBeforeLabel ? rewardBeforeLabel.match(/([\d.]+\s*(?:TB|GB|MB|KB|B))/i) : null;
+  const rewardNearLabel = findTrafficNearLabel(lines, [/^(?:签到获得|Check-in获得)$/i], ['before', 'after'])[0];
 
-  const totalSignDays = daysMatch ? Number(daysMatch[1]) : (daysBeforeLabelMatch ? Number(daysBeforeLabelMatch[1]) : null);
-  const totalRewardText = normalizeTrafficText(totalRewardMatch ? totalRewardMatch[1] : (rewardBeforeLabelMatch ? rewardBeforeLabelMatch[1] : null));
+  const totalSignDays = daysMatch ? Number(daysMatch[1]) : (daysBeforeLabelMatch ? Number(daysBeforeLabelMatch[1]) : daysNearLabel);
+  const totalRewardText = normalizeTrafficText(totalRewardMatch ? totalRewardMatch[1] : (rewardBeforeLabelMatch ? rewardBeforeLabelMatch[1] : rewardNearLabel));
 
   return {
     totalSignDays,
@@ -149,14 +230,17 @@ function pickLargestTrafficText(candidates) {
 
 async function extractDashboardStats(page) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
+  const lines = getBodyLines(bodyText);
 
-  const todayRewardMatch = bodyText.match(/本次签到获得\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+  const todayRewardMatch = bodyText.match(/本次(?:签到|Check-in)获得\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/i);
+  const todayRewardNearLabel = findTrafficNearLabel(lines, [/本次(?:签到|Check-in)获得/i], ['after', 'before'])[0];
   const remainingCandidates = [
     ...Array.from(bodyText.matchAll(/([\d.]+\s*(?:TB|GB|MB|KB|B))\s*剩余流量/ig)).map((match) => match[1]),
     ...Array.from(bodyText.matchAll(/剩余流量\s*([\d.]+\s*(?:TB|GB|MB|KB|B))/ig)).map((match) => match[1]),
+    ...findTrafficNearLabel(lines, [/剩余(?:流量|Traffic)/i], ['before', 'after']),
   ];
 
-  const todayRewardText = todayRewardMatch ? todayRewardMatch[1].replace(/\s+/g, '') : null;
+  const todayRewardText = todayRewardMatch ? todayRewardMatch[1].replace(/\s+/g, '') : todayRewardNearLabel;
   const remainingBest = pickLargestTrafficText(remainingCandidates);
 
   return {
@@ -175,8 +259,11 @@ async function waitForDashboardStats(page, timeoutMs = 15_000) {
   try {
     await page.waitForFunction(
       () => {
-        const text = document.body?.innerText || '';
-        return text.includes('本次签到获得') && text.includes('剩余流量');
+        const text = (document.body?.innerText || '').replace(/\[MT\]/g, '');
+        return (
+          /本次(?:签到|Check-in)获得/i.test(text) &&
+          /剩余(?:流量|Traffic)/i.test(text)
+        );
       },
       { timeout: timeoutMs }
     );
@@ -480,10 +567,11 @@ async function waitForLoginSuccess(page, timeoutMs = 30_000) {
  */
 async function checkSignedToday(page) {
   const bodyText = await page.locator('body').innerText().catch(() => '');
+  const normalizedBodyText = cleanBodyLine(bodyText);
 
   // 优先检查上次签到日期是否为今天（最可靠）
   const today = getTodaySignDate();
-  const lastSignMatch = bodyText.match(/上次签到\s*[:：]?\s*(\d{4}-\d{2}-\d{2}|\d{4}\.\d{2}\.\d{2}|\d{2}-\d{2}|\d{2}\.\d{2})/);
+  const lastSignMatch = normalizedBodyText.match(/上次(?:签到|Check-in)\s*[:：]?\s*(\d{4}-\d{2}-\d{2}|\d{4}\.\d{2}\.\d{2}|\d{2}-\d{2}|\d{2}\.\d{2})/i);
   if (lastSignMatch) {
     let lastSignDate = lastSignMatch[1];
     // 处理不同日期格式
@@ -505,9 +593,11 @@ async function checkSignedToday(page) {
   const explicitPatterns = [
     '您今天已经签到过了',
     '今天已经签到过了',
+    '您今天已经Check-in过了',
+    '今天已经Check-in过了',
   ];
   for (const pattern of explicitPatterns) {
-    if (bodyText.includes(pattern)) {
+    if (normalizedBodyText.includes(pattern)) {
       return { signed: true, pattern: `页面提示: ${pattern}` };
     }
   }
@@ -515,25 +605,31 @@ async function checkSignedToday(page) {
   // 签到成功提示（执行后出现）
   const successPatterns = ['签到成功', '恭喜获得'];
   for (const pattern of successPatterns) {
-    if (bodyText.includes(pattern)) {
+    if (normalizedBodyText.includes(pattern)) {
       return { signed: true, pattern: `成功提示: ${pattern}` };
     }
   }
 
   // 检测签到按钮是否存在且可见（关键判断）
-  const signButton = page.getByRole('button', { name: '立即签到' });
+  const signButton = page.getByRole('button', { name: /立即(?:签到|Check-in)/i });
   const buttonVisible = await signButton.isVisible().catch(() => false);
   const buttonCount = await signButton.count().catch(() => 0);
+  const buttonEnabled = buttonCount > 0 ? await signButton.first().isEnabled().catch(() => true) : false;
 
-  if (buttonVisible && buttonCount > 0) {
+  if (buttonVisible && buttonCount > 0 && buttonEnabled) {
     // 签到按钮可见 → 未签到
     console.log('[签到判断] 检测到「立即签到」按钮可见，判断为未签到');
     return { signed: false };
   }
 
+  if (buttonVisible && buttonCount > 0 && !buttonEnabled) {
+    console.log('[签到判断] 签到按钮已禁用，判断为已签到');
+    return { signed: true, pattern: '签到按钮已禁用' };
+  }
+
   // 签到按钮不可见或不存在
   // 检查是否有替代的「已签到」相关状态文字
-  if (bodyText.includes('已签到') || bodyText.includes('已经签到') || bodyText.includes('今日已签')) {
+  if (normalizedBodyText.includes('已签到') || normalizedBodyText.includes('已经签到') || normalizedBodyText.includes('今日已签')) {
     console.log('[签到判断] 签到按钮不可见，页面显示已签到状态');
     return { signed: true, pattern: '按钮不可见且页面显示已签到' };
   }

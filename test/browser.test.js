@@ -96,6 +96,22 @@ test('checkSignedToday treats today\'s last sign date as already signed', async 
   });
 });
 
+test('checkSignedToday treats mixed MT Check-in already-signed copy as signed', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <div>
+        <div>[MT] 您今天已经Check-in过了噢</div>
+        <div>[MT] 继续保持Check-in就可以获得更多的Traffic</div>
+        <button class="el-button el-button--primary is-disabled" disabled>[MT] 立即Check-in</button>
+      </div>
+    `);
+
+    const result = await checkSignedToday(page);
+
+    assert.equal(result.signed, true);
+  });
+});
+
 test('inferSignStateFromRequest treats API success copy as signed', () => {
   const result = inferSignStateFromRequest({
     seen: true,
@@ -188,6 +204,48 @@ test('extractSignStats extracts actual sign page line-before-label format', asyn
 
     assert.equal(stats.totalSignDays, 9);
     assert.equal(stats.totalRewardText, '2.97GB');
+  });
+});
+
+test('extractSignStats extracts mixed MT Check-in labels from current sign page', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <div>
+        <div>[MT] 累计Check-in</div>
+        <div>44 [MT] 天</div>
+        <div>[MT] Check-in获得</div>
+        <div>13.48 GB</div>
+        <div>[MT] 可用Traffic</div>
+        <div>1011.32 MB</div>
+        <div>[MT] 上次Check-in</div>
+        <div>2026-06-23</div>
+      </div>
+    `);
+
+    const stats = await extractSignStats(page);
+
+    assert.equal(stats.totalSignDays, 44);
+    assert.equal(stats.totalRewardText, '13.48GB');
+  });
+});
+
+test('extractDashboardStats extracts split traffic values from mixed MT dashboard labels', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <div>
+        <div>100.99</div>
+        <div>GB</div>
+        <div>[MT] 剩余Traffic</div>
+        <div>[MT] 本次Check-in获得</div>
+        <div>286.24 MB</div>
+        <div>[MT] 今日已Check-in</div>
+      </div>
+    `);
+
+    const stats = await extractDashboardStats(page);
+
+    assert.equal(stats.todayRewardText, '286.24MB');
+    assert.equal(stats.remainingText, '100.99GB');
   });
 });
 
