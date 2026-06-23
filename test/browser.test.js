@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
-const { clickSignButton, checkSignedToday, inferSignStateFromRequest, extractSignStats, extractDashboardStats, buildResultTemplate, trafficTextToBytes, formatTrafficCompact, isLoginPageRenderedText } = require('../src/browser');
+const { clickSignButton, clickLoginButton, checkSignedToday, inferSignStateFromRequest, extractSignStats, extractDashboardStats, buildResultTemplate, trafficTextToBytes, formatTrafficCompact, isLoginPageRenderedText } = require('../src/browser');
 
 async function withPage(fn) {
   const browser = await chromium.launch({ headless: true });
@@ -127,6 +127,21 @@ test('isLoginPageRenderedText accepts English 52frp login page copy', () => {
   `;
 
   assert.equal(isLoginPageRenderedText(text), true);
+});
+
+test('clickLoginButton clicks English login button', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <button type="button" class="el-button el-button--primary" onclick="window.__loginClicked = true">
+        <span>Login</span>
+      </button>
+    `);
+
+    const result = await clickLoginButton(page);
+
+    assert.equal(result.clicked, true);
+    assert.equal(await page.evaluate(() => window.__loginClicked === true), true);
+  });
 });
 
 test('extractSignStats extracts total reward from “累计签到 X.XX GB” format', async () => {

@@ -415,6 +415,35 @@ async function handleSliderVerification(page, timeoutMs = 30_000) {
   return { handled: true, success: false, reason: 'slider_still_visible' };
 }
 
+async function clickLoginButton(page) {
+  console.log('[登录] 查找登录按钮...');
+
+  const buttonName = /^(登录|Login)$/i;
+  const strategies = [
+    { name: 'role按钮', locator: page.getByRole('button', { name: buttonName }) },
+    { name: 'button文本', locator: page.locator('button').filter({ hasText: buttonName }) },
+    { name: 'Element Plus主按钮', locator: page.locator('.el-button.el-button--primary').filter({ hasText: buttonName }) },
+  ];
+
+  for (const strategy of strategies) {
+    const count = await strategy.locator.count().catch(() => 0);
+    for (let index = 0; index < count; index++) {
+      const candidate = strategy.locator.nth(index);
+      const visible = await candidate.isVisible().catch(() => false);
+      if (!visible) continue;
+
+      const text = await candidate.innerText().catch(() => '');
+      console.log(`[登录] 找到按钮 (${strategy.name}): "${text.trim()}"`);
+      await candidate.click();
+      console.log('[登录] 已点击登录按钮');
+      return { clicked: true, strategy: strategy.name, text: text.trim() };
+    }
+  }
+
+  console.log('[登录] 未找到登录按钮');
+  return { clicked: false, reason: 'login_button_not_found' };
+}
+
 /**
  * 等待登录成功
  */
@@ -962,12 +991,11 @@ async function pureBrowserCheckIn({
     console.log('[3/5] 点击登录...');
     steps.push('click_login');
 
-    const loginButton = page.getByRole('button', { name: '登录' }).or(
-      page.locator('button').filter({ hasText: '登录' })
-    );
-
-    await loginButton.click();
-    console.log('[登录] 已点击登录按钮');
+    const loginClickResult = await clickLoginButton(page);
+    if (!loginClickResult.clicked) {
+      await saveDebugArtifacts(page, 'login-button-not-found');
+      throw new Error('未找到登录按钮');
+    }
 
     // 等待一下让滑块可能出现
     await page.waitForTimeout(1500);
@@ -1181,6 +1209,7 @@ async function pureBrowserCheckIn({
 module.exports = {
   pureBrowserCheckIn,
   handleSliderVerification,
+  clickLoginButton,
   checkSignedToday,
   clickSignButton,
   dismissBlockingOverlays,
