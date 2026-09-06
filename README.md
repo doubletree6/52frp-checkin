@@ -26,6 +26,7 @@
 | `FRP_USERNAME` | 52frp 账号 / 手机号 / 邮箱 |
 | `FRP_PASSWORD` | 52frp 密码 |
 | `PUSHPLUS_TOKEN` | 可选，PushPlus 推送 token |
+| `PUSHPLUS_CHANNEL` | 可选，PushPlus 发送渠道，例如 `wechat` 或 `webhook` |
 
 ## 使用方式
 
@@ -43,6 +44,10 @@
 如果你想收到微信推送，再加：
 
 - `PUSHPLUS_TOKEN`
+
+如果需要指定 PushPlus 发送渠道，在仓库 `Settings` → `Secrets and variables` → `Actions` → `Variables` 中添加：
+
+- `PUSHPLUS_CHANNEL`
 
 ### 3. 启用 GitHub Actions
 

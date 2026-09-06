@@ -1,5 +1,6 @@
 async function sendNotification(message) {
   const token = process.env.PUSHPLUS_TOKEN || process.env.token;
+  const channel = process.env.PUSHPLUS_CHANNEL || process.env.channel;
 
   if (!token) {
     const tip = 'PushPlus: 未配置 PUSHPLUS_TOKEN，跳过推送';
@@ -7,16 +8,22 @@ async function sendNotification(message) {
     return tip;
   }
 
+  const payload = {
+    token,
+    title: `Q:${message}`,
+    content: message,
+  };
+
+  if (channel) {
+    payload.channel = channel;
+  }
+
   const response = await fetch('http://www.pushplus.plus/send', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      token,
-      title: `Q:${message}`,
-      content: message,
-    }),
+    body: JSON.stringify(payload),
   });
 
   const text = await response.text();

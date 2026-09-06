@@ -63,6 +63,7 @@ jobs:
         if: always()
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          PUSHPLUS_CHANNEL: ${{ vars.PUSHPLUS_CHANNEL }}
         run: node push_notification.js "${{ steps.checkin.outputs.checkin_result }}"
 
   keepalive:
