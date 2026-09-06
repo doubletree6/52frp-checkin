@@ -3,32 +3,33 @@ name: Daily 52frp Check-in
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions cron uses UTC. 03:15 UTC = 11:15 Asia/Shanghai.
+    # 每日签到: UTC 03:15 = 北京时间 11:15
     - cron: '15 3 * * *'
+    # 每月保活: 每月1号 UTC 00:00 = 北京时间 08:00
+    - cron: '0 0 1 * *'
 
 jobs:
   checkin:
+    name: 52frp 签到
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule' || github.event.schedule != '0 0 1 * *'
+    timeout-minutes: 15
+    concurrency:
+      group: 52frp-checkin
+      cancel-in-progress: false
     container:
       image: mcr.microsoft.com/playwright:v1.59.1-jammy
       options: --user root --shm-size=2gb
     env:
       DISPLAY: :99
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Start Xvfb (virtual display for headful browser)
+      - uses: actions/checkout@v4
+      - run: npm ci
+      - name: Start Xvfb
         run: |
           Xvfb :99 -screen 0 1920x1080x24 -ac &
           sleep 2
-          echo "Xvfb started on display :99"
-
-      - name: Run check-in (headful mode via Xvfb)
+      - name: Run check-in
         id: checkin
         env:
           FRP_USERNAME: ${{ secrets.FRP_USERNAME }}
@@ -41,23 +42,16 @@ jobs:
           output=$(node checkin.js 2>&1)
           status=$?
           set -e
-
           echo "$output"
-
-          result=$(printf '%s\n' "$output" | sed -n 's/^CHECKIN_RESULT: //p' | tail -n 1)
-          if [ -z "$result" ]; then
-            result="签到脚本执行完成，但未解析到结果"
-          fi
-
+          result=$(printf '%s\n' "$output" | sed -n '/^CHECKIN_RESULT: /,$ { s/^CHECKIN_RESULT: //; p; }')
+          [ -z "$result" ] && result="签到脚本执行完成，但未解析到结果"
           {
             echo "checkin_result<<EOF"
             echo "$result"
             echo "EOF"
             echo "exit_code=$status"
           } >> "$GITHUB_OUTPUT"
-
           exit $status
-
       - name: Upload debug artifacts
         if: failure()
         uses: actions/upload-artifact@v4
@@ -65,9 +59,33 @@ jobs:
           name: 52frp-debug-artifacts
           path: debug-artifacts/
           if-no-files-found: ignore
-
-      - name: PushPlus notification
+      - name: Send notifications
         if: always()
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        run: node push_notification.js "${{ steps.checkin.outputs.checkin_result }}"
+          PUSHPLUS_CHANNEL: ${{ secrets.PUSHPLUS_CHANNEL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          CHECKIN_MESSAGE: ${{ steps.checkin.outputs.checkin_result }}
+        run: node push_notification.js "$CHECKIN_MESSAGE"
+
+  keepalive:
+    name: 每月空提交保活
+    if: github.event_name == 'schedule' && github.event.schedule == '0 0 1 * *'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: 52frp-keepalive
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: 创建空提交并推送
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit --allow-empty -m "chore: keepalive to prevent workflow suspension"
+          git push

@@ -26,6 +26,9 @@
 | `FRP_USERNAME` | 52frp 账号 / 手机号 / 邮箱 |
 | `FRP_PASSWORD` | 52frp 密码 |
 | `PUSHPLUS_TOKEN` | 可选，PushPlus 推送 token |
+| `PUSHPLUS_CHANNEL` | 可选，PushPlus 发送渠道，例如 `wechat` 或 `webhook` |
+| `TG_BOT_TOKEN` | 可选，Telegram Bot token |
+| `TG_CHAT_ID` | 可选，Telegram 接收消息的 chat ID；需与 `TG_BOT_TOKEN` 同时配置 |
 
 ## 使用方式
 
@@ -43,6 +46,17 @@
 如果你想收到微信推送，再加：
 
 - `PUSHPLUS_TOKEN`
+
+如果需要指定 PushPlus 发送渠道，在仓库 `Settings` → `Secrets and variables` → `Actions` → `Secrets` 中添加：
+
+- `PUSHPLUS_CHANNEL`
+
+如果需要同时接收 Telegram 推送，在同一个 `Actions` → `Secrets` 中添加：
+
+- `TG_BOT_TOKEN`
+- `TG_CHAT_ID`
+
+PushPlus 和 Telegram 会同时发送同一条签到内容；未配置的渠道会自动跳过。
 
 ### 3. 启用 GitHub Actions
 
