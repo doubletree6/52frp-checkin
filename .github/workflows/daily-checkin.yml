@@ -59,11 +59,13 @@ jobs:
           name: 52frp-debug-artifacts
           path: debug-artifacts/
           if-no-files-found: ignore
-      - name: PushPlus notification
+      - name: Send notifications
         if: always()
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           PUSHPLUS_CHANNEL: ${{ secrets.PUSHPLUS_CHANNEL }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: node push_notification.js "${{ steps.checkin.outputs.checkin_result }}"
 
   keepalive:
