@@ -1,6 +1,8 @@
 async function sendPushPlus(message) {
   const token = process.env.PUSHPLUS_TOKEN || process.env.token;
   const channel = process.env.PUSHPLUS_CHANNEL || process.env.channel;
+  const [title, ...contentLines] = message.split(/\r?\n/);
+  const content = contentLines.join('\n').trim() || title;
 
   if (!token) {
     console.log('PushPlus: 未配置 PUSHPLUS_TOKEN，跳过推送');
@@ -9,8 +11,8 @@ async function sendPushPlus(message) {
 
   const payload = {
     token,
-    title: `Q:${message}`,
-    content: message,
+    title,
+    content,
   };
 
   if (channel) {
