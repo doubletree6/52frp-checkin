@@ -305,7 +305,7 @@ function buildResultTemplate(signStats, dashboardStats) {
   const remaining = dashboardStats?.remainingText ? dashboardStats.remainingText.replace(/B$/, '') : 'xG';
 
   return [
-    '52frp 签到成功',
+    '52frp签到成功',
     '',
     `签到天数：${days} 天`,
     `本次获得：${todayReward}`,
