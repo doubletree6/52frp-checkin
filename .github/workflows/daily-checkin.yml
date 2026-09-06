@@ -43,7 +43,7 @@ jobs:
           status=$?
           set -e
           echo "$output"
-          result=$(printf '%s\n' "$output" | sed -n 's/^CHECKIN_RESULT: //p' | tail -n 1)
+          result=$(printf '%s\n' "$output" | sed -n '/^CHECKIN_RESULT: /,$ { s/^CHECKIN_RESULT: //; p; }')
           [ -z "$result" ] && result="签到脚本执行完成，但未解析到结果"
           {
             echo "checkin_result<<EOF"
@@ -66,7 +66,8 @@ jobs:
           PUSHPLUS_CHANNEL: ${{ secrets.PUSHPLUS_CHANNEL }}
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
-        run: node push_notification.js "${{ steps.checkin.outputs.checkin_result }}"
+          CHECKIN_MESSAGE: ${{ steps.checkin.outputs.checkin_result }}
+        run: node push_notification.js "$CHECKIN_MESSAGE"
 
   keepalive:
     name: 每月空提交保活

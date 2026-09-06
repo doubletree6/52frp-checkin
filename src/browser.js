@@ -304,7 +304,14 @@ function buildResultTemplate(signStats, dashboardStats) {
   const totalReward = signStats?.totalRewardText ? signStats.totalRewardText.replace(/B$/, '') : 'xG';
   const remaining = dashboardStats?.remainingText ? dashboardStats.remainingText.replace(/B$/, '') : 'xG';
 
-  return `${days}:${todayReward};${totalReward};${remaining}`;
+  return [
+    '52frp 签到成功',
+    '',
+    `签到天数：${days} 天`,
+    `本次获得：${todayReward}`,
+    `累计获得：${totalReward}`,
+    `剩余流量：${remaining}`,
+  ].join('\n');
 }
 
 function resolveHeadless() {
