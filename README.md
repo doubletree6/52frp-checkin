@@ -84,17 +84,40 @@ FRP_USERNAME='your_username' FRP_PASSWORD='your_password' node checkin.js
 
 ## 输出示例
 
-签到成功：
+脚本最后会输出一行 `CHECKIN_RESULT:`，其后直到输出末尾的所有内容会被 workflow 收集并推送（PushPlus / Telegram）。
+
+本次运行完成签到：
 
 ```text
-CHECKIN_RESULT: success: 签到成功
+CHECKIN_RESULT: 52frp签到成功
+
+签到天数：42 天
+本次获得：256M
+累计获得：12.5G
+剩余流量：100.99G
+
+签到方式：本次运行自动签到成功
 ```
 
-今天已经签到过了：
+今天已经签到过了（手动签到，或当天更早的一次运行已签到）：
 
 ```text
-CHECKIN_RESULT: success: 您今天已经签到过了
+CHECKIN_RESULT: 52frp今日已签到（无需重复签到）
+
+签到天数：42 天
+本次获得：256M
+累计获得：12.5G
+剩余流量：100.99G
+
+签到方式：本次运行前已完成（手动签到或当天更早的一次运行），脚本未重复签到
 ```
+
+签到状态通过返回值区分：
+
+- `status: success` —— 本次运行完成签到
+- `status: already_signed` —— 本轮开始时就已签到，`details.signKind = 'already'`
+
+若某一轮遇到站点/CDN 临时故障、靠后面几轮才成功，推送里会多一行 `备注：第 N 轮才成功，前几轮遇到临时故障`。
 
 ## 项目结构
 

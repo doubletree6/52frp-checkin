@@ -50,21 +50,31 @@ async function main() {
       timeoutMs: process.env.FRP_TIMEOUT_MS ? parseInt(process.env.FRP_TIMEOUT_MS, 10) : 60_000,
     });
 
+    const signKind = result.details?.signKind ?? (result.status === 'already_signed' ? 'already' : 'success');
+    const kindLabel = signKind === 'already'
+      ? '今日已签到（本次运行前已完成，可能是手动签到）'
+      : '本次运行自动签到成功';
+
     console.log('');
     console.log('='.repeat(50));
     console.log(`结果: ${result.status}`);
+    console.log(`签到方式: ${kindLabel}`);
     if (result.details?.rounds > 1) {
       console.log(`轮次: 第 ${result.details.rounds} 轮成功（前几轮遇到临时故障）`);
     }
-    console.log(`消息: ${result.message}`);
+    console.log(`消息: ${result.message.split('\n')[0]}`);
     if (result.details?.signInfo) {
       console.log(`详情: ${result.details.signInfo}`);
     }
     console.log('='.repeat(50));
     console.log('');
 
-    // 输出标准化结果（供 GitHub Actions / PushPlus 捕获）
-    console.log(`CHECKIN_RESULT: ${result.message}`);
+    // 推送文案 CHECKIN_RESULT 之后的行才会被 workflow 收集，所以把有用的上下文都拼进去
+    const noticeLines = [result.message];
+    if (result.details?.rounds > 1) {
+      noticeLines.push('', `备注：第 ${result.details.rounds} 轮才成功，前几轮遇到临时故障`);
+    }
+    console.log(`CHECKIN_RESULT: ${noticeLines.join('\n')}`);
 
     // 设置退出码
     if (result.status === 'success' || result.status === 'already_signed') {

@@ -115,6 +115,16 @@ function getUrlHost(rawUrl) {
   }
 }
 
+/** host + pathname，用于日志/报错里定位具体是哪个资源挂在回源上（不带 query，避免刷屏） */
+function getUrlPath(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    return `${url.hostname}${url.pathname}`;
+  } catch {
+    return String(rawUrl || '');
+  }
+}
+
 function shouldBlockUrl(rawUrl, mode) {
   if (mode === 'off') return false;
 
@@ -485,7 +495,14 @@ async function loadDashboardStats(page, dashboardUrl) {
   return stats;
 }
 
-function buildResultTemplate(signStats, dashboardStats) {
+/**
+ * 生成签到结果文案。
+ *
+ * @param {'success'|'already'} kind
+ *   success —— 由本次运行完成签到
+ *   already —— 脚本点签到之前今日签到就已完成（用户手动签的，或当天更早的一次运行签的）
+ */
+function buildResultTemplate(signStats, dashboardStats, kind = 'success') {
   const days = Number.isFinite(signStats?.totalSignDays) ? signStats.totalSignDays : 'x';
   const todayReward = Number.isFinite(dashboardStats?.todayRewardBytes) && dashboardStats.todayRewardBytes > 0
     ? formatTrafficCompact(dashboardStats.todayRewardBytes)
@@ -493,14 +510,29 @@ function buildResultTemplate(signStats, dashboardStats) {
   const totalReward = signStats?.totalRewardText ? signStats.totalRewardText.replace(/B$/, '') : 'xG';
   const remaining = dashboardStats?.remainingText ? dashboardStats.remainingText.replace(/B$/, '') : 'xG';
 
-  return [
-    '52frp签到成功',
+  const isAlready = kind === 'already';
+
+  const lines = [
+    isAlready ? '52frp今日已签到（无需重复签到）' : '52frp签到成功',
     '',
     `签到天数：${days} 天`,
     `本次获得：${todayReward}`,
     `累计获得：${totalReward}`,
     `剩余流量：${remaining}`,
-  ].join('\n');
+  ];
+
+  if (isAlready) {
+    lines.push('', '签到方式：本次运行前已完成（手动签到或当天更早的一次运行），脚本未重复签到');
+  } else {
+    lines.push('', '签到方式：本次运行自动签到成功');
+  }
+
+  return lines.join('\n');
+}
+
+/** 从「已签到」判定的来源描述里，判断这一天到底是不是本次运行才签上的 */
+function resolveSignKind(signInfo) {
+  return /已经签到|已签到/i.test(String(signInfo || '')) ? 'already' : 'success';
 }
 
 function resolveHeadless() {
@@ -1158,10 +1190,22 @@ async function attemptCheckInOnce({
    * 3. 渲染判据带兜底（见 waitForLoginPageRendered）
    */
   async function loadLoginPageWithRetry(maxRetries = LOGIN_PAGE_MAX_ATTEMPTS) {
+    /**
+     * 两份数组，职责不同：
+     * - upstreamErrorsAll：跨 attempt 累积，用于最终的报错详情
+     *   最后一次 attempt 很可能一个响应都收不到（整个页面根本没加载起来），
+     *   如果只用当次的数据，报错里就会出现「（未知）」——恰好在诊断最需要信息的时候丢掉线索。
+     * - upstreamErrors：仅当次 attempt，用于 waitForLoginPageRendered 的「提前中断等待」
+     *   必须每次清空，否则会把上一次的错误状态带到新一轮。
+     */
+    const upstreamErrorsAll = [];
     const upstreamErrors = [];
+
     const onResponse = (response) => {
       if (isUpstreamError(response.status())) {
-        upstreamErrors.push(`${response.status()} ${response.url()}`);
+        const entry = `${response.status()} ${getUrlPath(response.url())}`;
+        upstreamErrors.push(entry);
+        if (!upstreamErrorsAll.includes(entry)) upstreamErrorsAll.push(entry);
       }
     };
     page.on('response', onResponse);
@@ -1231,7 +1275,10 @@ async function attemptCheckInOnce({
         console.log(`[页面] 登录页未渲染 (body 文本长度=${bodyLen}, attempt ${attempt}/${maxRetries})`);
 
         if (hitUpstream) {
-          console.log(`[页面] 上游回源错误 (${upstreamErrors.length} 条): ${[...new Set(upstreamErrors)].slice(0, 5).join(' | ')}`);
+          console.log(
+            `[页面] 上游回源错误 (本轮累计 ${upstreamErrorsAll.length} 条, 去重前5): `
+            + `${[...new Set(upstreamErrorsAll)].slice(0, 5).join(' | ')}`
+          );
         } else if (jsErrors.length > 0) {
           console.log(`[页面] JS 错误 (${jsErrors.length} 条, 去重前5): ${[...new Set(jsErrors)].slice(0, 5).join(' | ')}`);
         }
@@ -1242,7 +1289,7 @@ async function attemptCheckInOnce({
 
         if (sawUpstreamError) {
           const err = new Error(
-            `站点/CDN 上游故障：登录页资源返回 5xx（${[...new Set(upstreamErrors)].slice(0, 3).join('; ') || '未知'}），稍后重试通常可自愈`
+            `站点/CDN 上游故障：登录页资源返回 5xx（${[...new Set(upstreamErrorsAll)].slice(0, 3).join('; ') || '未知'}），稍后重试通常可自愈`
           );
           err.kind = 'upstream';
           throw err;
@@ -1382,12 +1429,22 @@ async function attemptCheckInOnce({
     // 检查是否已签到
     const beforeCheck = await checkSignedToday(page);
     if (beforeCheck.signed) {
-      const template = buildResultTemplate(beforeStats, dashboardStats);
+      const template = buildResultTemplate(beforeStats, dashboardStats, 'already');
       console.log(`[签到] ${beforeCheck.pattern}`);
+      console.log('[签到] 今日签到在本轮运行之前就已存在，按「已签到」上报');
       return {
         status: 'already_signed',
         message: template,
-        details: { steps, loginSuccess, sliderHandled, signStats: beforeStats, dashboardStats, template },
+        details: {
+          steps,
+          loginSuccess,
+          sliderHandled,
+          signStats: beforeStats,
+          dashboardStats,
+          template,
+          signedBy: 'already',
+          signKind: 'already',
+        },
       };
     }
 
@@ -1415,10 +1472,20 @@ async function attemptCheckInOnce({
         if (retryBeforeCheck.signed) {
           console.log(`[签到] 重试时发现已签到: ${retryBeforeCheck.pattern}`);
           afterStats = await extractSignStats(page);
+          const retryTemplate = buildResultTemplate(afterStats, dashboardStats, 'already');
           return {
             status: 'already_signed',
-            message: buildResultTemplate(afterStats, dashboardStats),
-            details: { steps, loginSuccess, sliderHandled, signStats: afterStats, dashboardStats, template: buildResultTemplate(afterStats, dashboardStats) },
+            message: retryTemplate,
+            details: {
+              steps,
+              loginSuccess,
+              sliderHandled,
+              signStats: afterStats,
+              dashboardStats,
+              template: retryTemplate,
+              signedBy: 'already',
+              signKind: 'already',
+            },
           };
         }
       }
@@ -1491,7 +1558,13 @@ async function attemptCheckInOnce({
     }
 
     if (afterCheck.signed || requestCheck.signed) {
-      const template = buildResultTemplate(afterStats, afterDashboardStats);
+      const signInfo = afterCheck.pattern || requestCheck.pattern;
+      // 点击后接口回「今天已经签到过了」也算 already：签到不是本次运行完成的
+      const signKind = resolveSignKind(signInfo);
+      if (signKind === 'already') {
+        console.log(`[签到] 签到请求返回已签到（${signInfo}），按「已签到」上报`);
+      }
+      const template = buildResultTemplate(afterStats, afterDashboardStats, signKind);
 
       return {
         status: 'success',
@@ -1504,7 +1577,9 @@ async function attemptCheckInOnce({
           dashboardStats: afterDashboardStats,
           template,
           signRequest,
-          signInfo: afterCheck.pattern || requestCheck.pattern,
+          signInfo,
+          signedBy: signKind === 'already' ? 'already' : 'script',
+          signKind,
         },
       };
     }
@@ -1515,11 +1590,20 @@ async function attemptCheckInOnce({
     if (toastCount > 0) {
       const toastText = await toastLocator.innerText().catch(() => '');
       if (toastText.includes('成功')) {
-        const template = buildResultTemplate(afterStats, afterDashboardStats);
+        const template = buildResultTemplate(afterStats, afterDashboardStats, 'success');
         return {
           status: 'success',
           message: template,
-          details: { steps, loginSuccess, sliderHandled, signStats: afterStats, dashboardStats: afterDashboardStats, template },
+          details: {
+            steps,
+            loginSuccess,
+            sliderHandled,
+            signStats: afterStats,
+            dashboardStats: afterDashboardStats,
+            template,
+            signedBy: 'script',
+            signKind: 'success',
+          },
         };
       }
 
@@ -1639,6 +1723,8 @@ module.exports = {
   extractDashboardStats,
   extractSignStats,
   buildResultTemplate,
+  resolveSignKind,
+  getUrlPath,
   loadDashboardStats,
   waitForDashboardStats,
   formatTrafficCompact,
