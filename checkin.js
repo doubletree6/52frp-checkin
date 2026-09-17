@@ -53,6 +53,9 @@ async function main() {
     console.log('');
     console.log('='.repeat(50));
     console.log(`结果: ${result.status}`);
+    if (result.details?.rounds > 1) {
+      console.log(`轮次: 第 ${result.details.rounds} 轮成功（前几轮遇到临时故障）`);
+    }
     console.log(`消息: ${result.message}`);
     if (result.details?.signInfo) {
       console.log(`详情: ${result.details.signInfo}`);
@@ -74,6 +77,14 @@ async function main() {
     console.error('');
     console.error('='.repeat(50));
     console.error(`错误: ${error.message}`);
+    if (error.rounds > 1) {
+      console.error(`已重试 ${error.rounds} 轮仍失败`);
+    }
+    if (error.kind === 'upstream') {
+      console.error('提示: 属于站点/CDN 侧临时故障，通常无需处理');
+    } else if (error.kind === 'structure') {
+      console.error('提示: 可能是页面结构变化，需要更新检测规则');
+    }
     console.error('='.repeat(50));
     console.error('');
 

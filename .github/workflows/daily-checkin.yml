@@ -13,7 +13,8 @@ jobs:
     name: 52frp 签到
     runs-on: ubuntu-latest
     if: github.event_name != 'schedule' || github.event.schedule != '0 0 1 * *'
-    timeout-minutes: 15
+    # 签到脚本最多跑 3 轮（见 src/browser.js），每轮之间会等待退避，预留充足余量
+    timeout-minutes: 30
     concurrency:
       group: 52frp-checkin
       cancel-in-progress: false
@@ -23,7 +24,7 @@ jobs:
     env:
       DISPLAY: :99
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: npm ci
       - name: Start Xvfb
         run: |
@@ -54,7 +55,7 @@ jobs:
           exit $status
       - name: Upload debug artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: 52frp-debug-artifacts
           path: debug-artifacts/
@@ -80,7 +81,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 1
       - name: 创建空提交并推送

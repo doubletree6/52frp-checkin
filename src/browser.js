@@ -27,6 +27,148 @@ const LOGIN_PAGE_RENDER_PATTERNS = [
   { source: '\\bLogin\\b', flags: 'i' },
 ];
 
+// ---------------------------------------------------------------------------
+// 稳定性增强
+//
+// GitHub Actions 的 runner 位于海外机房，访问 52frp 国内的 CDN 边缘节点时
+// 经常撞上分钟级的回源故障（522 / 524 / 525）。一旦 JS bundle 拉取失败，
+// SPA 就没有可执行的代码，页面全白（body 文本长度 = 0）。
+//
+// 应对思路不是让单次请求变得更强，而是：
+//   1) 在一次运行内多来几轮，每轮都是全新的浏览器实例（New browser per round）
+//   2) 尽早识别回源故障，别傻等到超时
+//   3) 砍掉与签到无关的第三方请求，缩小失败面
+// ---------------------------------------------------------------------------
+
+/** CDN / 源站回源类错误码：命中即可判定为「站点侧故障，可自愈」 */
+const UPSTREAM_ERROR_CODES = [
+  500, 502, 503, 504, 520, 521, 522, 523, 524, 525, 526, 527, 530,
+];
+
+/** 登录页：单轮内的重试次数与退避序列（ms） */
+const LOGIN_PAGE_MAX_ATTEMPTS = 3;
+const LOGIN_PAGE_BACKOFF_MS = [0, 6_000, 12_000];
+const LOGIN_GOTO_ATTEMPTS = 2;
+
+/** 登录页：各项等待的上限（ms）。刻意收紧，把时间留给「整轮重来」 */
+const LOGIN_GOTO_TIMEOUT_MS = 30_000;
+const LOGIN_NETWORKIDLE_TIMEOUT_MS = 15_000;
+const LOGIN_RENDER_TIMEOUT_MS = 20_000;
+
+/** 渲染检测的轮询间隔（ms） */
+const LOGIN_RENDER_POLL_MS = 500;
+
+/** 每轮完整流程之间的间隔（ms）：给源站留出恢复时间 */
+const ROUND_BACKOFF_MS = [45_000, 75_000];
+
+/** 与签到无关、却要跨洋请求的第三方资源 */
+const THIRD_PARTY_HOST_PATTERNS = [
+  /^api\.iconify\.design$/i,
+  /^api\.unisvg\.com$/i,
+  /^api\.simplesvg\.com$/i,
+  /^fonts\.googleapis\.com$/i,
+  /^fonts\.gstatic\.com$/i,
+  /(^|\.)googletagmanager\.com$/i,
+  /(^|\.)google-analytics\.com$/i,
+  /(^|\.)doubleclick\.net$/i,
+  /(^|\.)clarity\.ms$/i,
+  /(^|\.)baidu\.com$/i,
+  /(^|\.)bdstatic\.com$/i,
+  /(^|\.)yandex\.(ru|com)$/i,
+];
+
+/** 无论什么模式都放行的域名（含同源） */
+const FIRST_PARTY_HOST_PATTERNS = [
+  /(^|\.)52frp\.com$/i,
+];
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function resolveEnvInt(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+
+  const value = Number.parseInt(raw, 10);
+  return Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+/** 第三方资源屏蔽模式：off | safe（默认）| strict */
+function resolveBlockThirdPartyMode() {
+  const raw = (process.env.FRP_BLOCK_THIRD_PARTY || 'safe').trim().toLowerCase();
+  if (raw === 'off' || raw === 'none' || raw === 'false' || raw === '0') return 'off';
+  if (raw === 'strict' || raw === 'whitelist') return 'strict';
+
+  return 'safe';
+}
+
+function isUpstreamError(status) {
+  return UPSTREAM_ERROR_CODES.includes(Number(status));
+}
+
+function getUrlHost(rawUrl) {
+  try {
+    return new URL(rawUrl).hostname;
+  } catch {
+    return null; // data: / blob: 等非标准地址
+  }
+}
+
+function shouldBlockUrl(rawUrl, mode) {
+  if (mode === 'off') return false;
+
+  const host = getUrlHost(rawUrl);
+  if (!host) return false; // 解析不了的一律放行，避免误伤
+
+  if (FIRST_PARTY_HOST_PATTERNS.some((re) => re.test(host))) return false;
+  if (mode === 'strict') return true; // 严格模式：非 52frp 域名一律拦
+
+  return THIRD_PARTY_HOST_PATTERNS.some((re) => re.test(host));
+}
+
+/**
+ * 屏蔽与签到无关的第三方资源。
+ * 每一次跨洋请求都是一个可能拖垮首屏的失败点，能砍就砍。
+ */
+async function installResourceBlocker(page, mode) {
+  if (mode === 'off') {
+    console.log('[网络] 第三方资源屏蔽：已关闭');
+    return;
+  }
+
+  const blocked = { count: 0 };
+
+  await page.route('**/*', (route) => {
+    const url = route.request().url();
+    if (shouldBlockUrl(url, mode)) {
+      blocked.count += 1;
+      route.abort().catch(() => {});
+      return;
+    }
+    route.continue().catch(() => {});
+  });
+
+  console.log(`[网络] 第三方资源屏蔽：已启用 (mode=${mode})`);
+  page.once('close', () => {
+    if (blocked.count > 0) {
+      console.log(`[网络] 本轮共拦截 ${blocked.count} 个第三方请求`);
+    }
+  });
+}
+
+/** 关闭浏览器缓存，避免重试时反复拿到 CDN 缓存的同一个错误响应 */
+async function setBrowserCacheDisabled(context, page) {
+  try {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
+    return true;
+  } catch (error) {
+    console.log(`[网络] 无法关闭浏览器缓存（${error.message}），继续`);
+    return false;
+  }
+}
+
 function isLoginPageRenderedText(text) {
   const normalized = String(text || '').replace(/\s+/g, ' ').trim();
   if (normalized.length <= 20) return false;
@@ -34,6 +176,53 @@ function isLoginPageRenderedText(text) {
   return LOGIN_PAGE_RENDER_PATTERNS.some(({ source, flags = '' }) => (
     new RegExp(source, flags).test(normalized)
   ));
+}
+
+/**
+ * 轮询等待登录页渲染完成。
+ *
+ * 相比旧的 `page.waitForFunction`：
+ * - 一旦检测到回源错误立刻返回，不再白等到超时（旧版每次傻等 25s）
+ * - 文案没命中时，退化为检查账号/密码输入框是否存在（兜底判据，抗改版）
+ */
+async function waitForLoginPageRendered(page, { timeoutMs, upstreamErrors }) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (upstreamErrors && upstreamErrors.length > 0) {
+      return { rendered: false, abortedByUpstream: true };
+    }
+
+    try {
+      const textMatched = await page.evaluate((patterns) => {
+        const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
+        if (text.length <= 20) return false;
+
+        return patterns.some(({ source, flags = '' }) => (
+          new RegExp(source, flags).test(text)
+        ));
+      }, LOGIN_PAGE_RENDER_PATTERNS);
+
+      if (textMatched) return { rendered: true };
+
+      // 兜底：文案改了没关系，只要登录表单的结构在，就认为页面已经可用
+      const inputs = await page.evaluate(() => ({
+        password: document.querySelectorAll('input[type="password"]').length,
+        others: document.querySelectorAll('input:not([type="password"])').length,
+      }));
+
+      if (inputs.password > 0 && inputs.others > 0) {
+        console.log('[页面] 文案未命中，但已存在账号/密码输入框 → 兜底判定为已渲染');
+        return { rendered: true, viaFallback: true };
+      }
+    } catch {
+      // 页面正在导航，evaluate 会抛错，下一轮轮询再来
+    }
+
+    await sleep(LOGIN_RENDER_POLL_MS);
+  }
+
+  return { rendered: false };
 }
 
 function getTodaySignDate() {
@@ -903,20 +1092,21 @@ function inferSignStateFromRequest(signRequest) {
  * @param {Object} options.launchOptions - Playwright 启动选项
  * @returns {Promise<{status: string, message: string, details?: Object}>}
  */
-async function pureBrowserCheckIn({
+async function attemptCheckInOnce({
   username,
   password,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   launchOptions = {},
+  round = 1,
 }) {
   if (!username || !password) {
-    throw new Error('缺少账号或密码，请配置 FRP_USERNAME 和 FRP_PASSWORD');
+    const err = new Error('缺少账号或密码，请配置 FRP_USERNAME 和 FRP_PASSWORD');
+    err.retryable = false;
+    throw err;
   }
 
-  console.log('='.repeat(50));
-  console.log('52frp 纯浏览器签到（无 API）');
-  console.log('='.repeat(50));
-  console.log('');
+  const blockMode = resolveBlockThirdPartyMode();
+  const debugLabel = (label) => `round${round}-${label}`;
 
   const browser = await chromium.launch({
     headless: resolveHeadless(),
@@ -938,6 +1128,9 @@ async function pureBrowserCheckIn({
   const page = await context.newPage();
   page.setDefaultTimeout(timeoutMs);
 
+  // 砍掉与签到无关的第三方请求，缩小跨境链路上的失败面
+  await installResourceBlocker(page, blockMode);
+
   // 收集 JS 控制台错误，用于诊断 Vue SPA 渲染失败
   const jsErrors = [];
   page.on('console', (msg) => {
@@ -958,83 +1151,111 @@ async function pureBrowserCheckIn({
 
   /**
    * 加载登录页并等待 Vue SPA 完成渲染。
-   * 如果 Vue 未渲染（body 为空），自动重试（重载页面）。
+   *
+   * 相比旧版的三处改动：
+   * 1. 监听响应状态码，命中回源错误（522/524/525 等）立即放弃本次等待，不再傻等超时
+   * 2. 每次重试前清空 cookie、并关闭浏览器缓存，避免反复拿到 CDN 缓存的同一个错误响应
+   * 3. 渲染判据带兜底（见 waitForLoginPageRendered）
    */
-  async function loadLoginPageWithRetry(maxRetries = 4) {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      const backoffMs = (attempt - 1) * 4000; // 0, 4s, 8s, 12s
-      if (attempt > 1) {
-        console.log(`[页面] 第 ${attempt} 次重试加载登录页（等待 ${backoffMs / 1000}s）...`);
-        await page.waitForTimeout(backoffMs);
+  async function loadLoginPageWithRetry(maxRetries = LOGIN_PAGE_MAX_ATTEMPTS) {
+    const upstreamErrors = [];
+    const onResponse = (response) => {
+      if (isUpstreamError(response.status())) {
+        upstreamErrors.push(`${response.status()} ${response.url()}`);
       }
+    };
+    page.on('response', onResponse);
 
-      // 第一步：加载页面 HTML
-      let gotoOk = false;
-      for (let gt = 0; gt < 3; gt++) {
-        try {
-          await page.goto(LOGIN_PAGE, {
-            waitUntil: 'domcontentloaded',
-            timeout: 90_000,
-          });
-          gotoOk = true;
-          break;
-        } catch (gotoErr) {
-          console.log(`[页面] goto 失败 (尝试 ${gt + 1}/3): ${gotoErr.message}`);
-          if (gt < 2) await page.waitForTimeout(3000);
+    try {
+      await setBrowserCacheDisabled(context, page);
+
+      let sawUpstreamError = false;
+
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        upstreamErrors.length = 0;
+
+        if (attempt > 1) {
+          const backoffMs = LOGIN_PAGE_BACKOFF_MS[attempt - 1]
+            ?? LOGIN_PAGE_BACKOFF_MS[LOGIN_PAGE_BACKOFF_MS.length - 1];
+          console.log(`[页面] 第 ${attempt} 次重试加载登录页（等待 ${Math.round(backoffMs / 1000)}s）...`);
+          await sleep(backoffMs);
+          // 重置环境：清掉上一轮的 cookie，配合上面的关闭缓存，确保重新发起真实请求
+          await context.clearCookies().catch(() => {});
         }
-      }
-      if (!gotoOk) {
+
+        // 第一步：加载页面 HTML
+        let gotoOk = false;
+        for (let gt = 1; gt <= LOGIN_GOTO_ATTEMPTS; gt++) {
+          try {
+            await page.goto(LOGIN_PAGE, {
+              waitUntil: 'domcontentloaded',
+              timeout: LOGIN_GOTO_TIMEOUT_MS,
+            });
+            gotoOk = true;
+            break;
+          } catch (gotoErr) {
+            console.log(`[页面] goto 失败 (尝试 ${gt}/${LOGIN_GOTO_ATTEMPTS}): ${String(gotoErr.message).split('\n')[0]}`);
+            if (gt < LOGIN_GOTO_ATTEMPTS) await sleep(2000);
+          }
+        }
+
+        if (!gotoOk) {
+          if (attempt < maxRetries) continue;
+          const err = new Error('登录页加载失败：多次 goto 均失败（站点/CDN 不可达）');
+          err.kind = 'upstream';
+          throw err;
+        }
+
+        // 第二步：等待网络空闲
+        await page
+          .waitForLoadState('networkidle', { timeout: LOGIN_NETWORKIDLE_TIMEOUT_MS })
+          .catch(() => {});
+
+        // 第三步：等待 Vue 渲染（命中回源错误会提前返回）
+        const renderResult = await waitForLoginPageRendered(page, {
+          timeoutMs: LOGIN_RENDER_TIMEOUT_MS,
+          upstreamErrors,
+        });
+
+        if (renderResult.rendered) {
+          console.log(`[页面] 登录页渲染成功 (attempt ${attempt}/${maxRetries})`);
+          await sleep(1000);
+          return;
+        }
+
+        // 未渲染 —— 记录诊断信息并重试
+        const hitUpstream = upstreamErrors.length > 0;
+        if (hitUpstream) sawUpstreamError = true;
+
+        const bodyLen = (await page.locator('body').innerText().catch(() => '')).length;
+        console.log(`[页面] 登录页未渲染 (body 文本长度=${bodyLen}, attempt ${attempt}/${maxRetries})`);
+
+        if (hitUpstream) {
+          console.log(`[页面] 上游回源错误 (${upstreamErrors.length} 条): ${[...new Set(upstreamErrors)].slice(0, 5).join(' | ')}`);
+        } else if (jsErrors.length > 0) {
+          console.log(`[页面] JS 错误 (${jsErrors.length} 条, 去重前5): ${[...new Set(jsErrors)].slice(0, 5).join(' | ')}`);
+        }
+
         if (attempt < maxRetries) continue;
-        throw new Error('登录页加载失败：多次 goto 均失败');
-      }
 
-      // 第二步：等待网络空闲 + Vue 渲染
-      await page.waitForLoadState('networkidle', { timeout: 20_000 }).catch(() => {});
+        await saveDebugArtifacts(page, debugLabel(`login-not-rendered-attempt${attempt}`));
 
-      // 第三步：检测 Vue 是否真正渲染（用 body 文本长度，而非仅 input 数量）
-      let vueRendered = false;
-      try {
-        await page.waitForFunction(
-          (patterns) => {
-            const text = (document.body?.innerText || '').replace(/\s+/g, ' ').trim();
-            if (text.length <= 20) return false;
+        if (sawUpstreamError) {
+          const err = new Error(
+            `站点/CDN 上游故障：登录页资源返回 5xx（${[...new Set(upstreamErrors)].slice(0, 3).join('; ') || '未知'}），稍后重试通常可自愈`
+          );
+          err.kind = 'upstream';
+          throw err;
+        }
 
-            return patterns.some(({ source, flags = '' }) => (
-              new RegExp(source, flags).test(text)
-            ));
-          },
-          LOGIN_PAGE_RENDER_PATTERNS,
-          { timeout: 25_000 }
+        const err = new Error(
+          `页面结构可能已变化：登录页未渲染且未检测到资源错误（JS 错误: ${[...new Set(jsErrors)].slice(0, 3).join('; ') || '无'}）`
         );
-        vueRendered = true;
-      } catch {
-        // waitForFunction 超时
+        err.kind = 'structure';
+        throw err;
       }
-
-      // 额外等待确保 Vue 组件完全挂载
-      await page.waitForTimeout(1500);
-
-      if (vueRendered) {
-        console.log(`[页面] Vue 渲染成功 (attempt ${attempt}/${maxRetries})`);
-        return;
-      }
-
-      // Vue 未渲染 —— 保存调试信息并重试
-      const bodyLen = (await page.locator('body').innerText().catch(() => '')).length;
-      console.log(`[页面] Vue 未渲染 (body 文本长度=${bodyLen}, attempt ${attempt}/${maxRetries})`);
-
-      if (jsErrors.length > 0) {
-        const unique = [...new Set(jsErrors)].slice(0, 5);
-        console.log(`[页面] JS 错误 (${jsErrors.length} 条, 去重前5): ${unique.join(' | ')}`);
-      }
-
-      if (attempt === maxRetries) {
-        await saveDebugArtifacts(page, `login-vue-not-rendered-attempt${attempt}`);
-        const errDetail = jsErrors.length > 0
-          ? `（JS 错误: ${[...new Set(jsErrors)].slice(0, 3).join('; ')}）`
-          : '';
-        throw new Error(`登录页 Vue 应用未渲染，已重试 ${maxRetries} 次${errDetail}`);
-      }
+    } finally {
+      page.off('response', onResponse);
     }
   }
 
@@ -1082,7 +1303,7 @@ async function pureBrowserCheckIn({
     }
 
     if (!usernameInput || !passwordInput) {
-      await saveDebugArtifacts(page, 'login-inputs-not-found');
+      await saveDebugArtifacts(page, debugLabel('login-inputs-not-found'));
       throw new Error('未找到登录输入框，页面可能未正确加载');
     }
 
@@ -1125,7 +1346,7 @@ async function pureBrowserCheckIn({
       console.log('[登录] 滑块验证通过，再次点击登录...');
       const retryLoginClickResult = await clickLoginButton(page);
       if (!retryLoginClickResult.clicked) {
-        await saveDebugArtifacts(page, 'login-button-not-found-after-slider');
+        await saveDebugArtifacts(page, debugLabel('login-button-not-found-after-slider'));
         throw new Error('滑块验证通过后未找到登录按钮');
       }
       await page.waitForTimeout(2000);
@@ -1138,7 +1359,11 @@ async function pureBrowserCheckIn({
       // 检查是否仍在登录页
       const currentUrl = page.url();
       if (currentUrl.includes('/auth/login')) {
-        throw new Error('登录失败：可能账号密码错误或滑块验证未通过');
+        // 凭证问题重试多少次都没用，直接终止，省下后面的时间
+        const err = new Error('登录失败：可能账号密码错误或滑块验证未通过');
+        err.retryable = false;
+        err.kind = 'credentials';
+        throw err;
       }
     }
 
@@ -1306,15 +1531,106 @@ async function pureBrowserCheckIn({
     throw new Error('未检测到签到成功或失败提示');
 
   } finally {
-    console.log('');
-    console.log('[清理] 关闭浏览器...');
     await context.close().catch(() => {});
     await browser.close().catch(() => {});
+    console.log(`[清理] 第 ${round} 轮浏览器已关闭`);
   }
+}
+
+/**
+ * 对外入口：在**一次运行内**做多轮完整重试。
+ *
+ * 为什么是「整轮重来」而不是「调大单次重试次数」：
+ * runner 在海外机房，访问国内 CDN 时遇到的是分钟级回源故障，
+ * 单轮内的重试只会反复撞上同一次故障；拉开时间间隔、换全新浏览器实例，
+ * 才真正给自己多一次机会。而且成功时第一轮就返回，不额外花时间。
+ *
+ * 环境变量：
+ *   FRP_ROUNDS              最大轮数（默认 3）
+ *   FRP_TOTAL_BUDGET_MS     总预算，超时则不再开新轮（默认 18 分钟）
+ *   FRP_BLOCK_THIRD_PARTY   第三方资源屏蔽模式 off|safe|strict（默认 safe）
+ */
+async function pureBrowserCheckIn(options = {}) {
+  const {
+    username,
+    password,
+    timeoutMs = DEFAULT_TIMEOUT_MS,
+    launchOptions = {},
+  } = options;
+
+  const maxRounds = resolveEnvInt('FRP_ROUNDS', 3);
+  const totalBudgetMs = resolveEnvInt('FRP_TOTAL_BUDGET_MS', 18 * 60 * 1000);
+  const startedAt = Date.now();
+  let lastError = null;
+
+  console.log('='.repeat(50));
+  console.log('52frp 纯浏览器签到（无 API）');
+  console.log('='.repeat(50));
+  console.log(`[配置] 最大轮数=${maxRounds} 总预算=${Math.round(totalBudgetMs / 60_000)}分钟`);
+  console.log('');
+
+  for (let round = 1; round <= maxRounds; round++) {
+    if (round > 1) {
+      const elapsed = Date.now() - startedAt;
+      const remainingMs = totalBudgetMs - elapsed;
+
+      if (remainingMs <= 0) {
+        console.log(`[重试] 总预算已用尽（${Math.round(elapsed / 1000)}s），不再开始第 ${round} 轮`);
+        break;
+      }
+
+      const plannedMs = ROUND_BACKOFF_MS[round - 2] ?? ROUND_BACKOFF_MS[ROUND_BACKOFF_MS.length - 1];
+      // 剩余预算不够时不必傻等满，直接开始这一轮
+      const waitMs = Math.min(plannedMs, remainingMs);
+      if (waitMs < plannedMs) {
+        console.log(`[重试] 剩余预算不足以等待 ${Math.round(plannedMs / 1000)}s，缩短为 ${Math.round(waitMs / 1000)}s`);
+      } else {
+        console.log(`[重试] 等待 ${Math.round(waitMs / 1000)}s 后开始第 ${round}/${maxRounds} 轮...`);
+      }
+      await sleep(waitMs);
+    }
+
+    console.log(`===== 第 ${round}/${maxRounds} 轮 =====`);
+
+    try {
+      const result = await attemptCheckInOnce({
+        username,
+        password,
+        timeoutMs,
+        launchOptions,
+        round,
+      });
+
+      if (round > 1) {
+        console.log(`[重试] 第 ${round} 轮成功`);
+      }
+
+      if (result?.details) {
+        result.details.rounds = round;
+      }
+
+      return result;
+    } catch (error) {
+      lastError = error;
+      console.log(`[重试] 第 ${round}/${maxRounds} 轮失败: ${error.message}`);
+
+      if (error?.retryable === false) {
+        console.log('[重试] 该错误不可重试，已终止后续轮次');
+        throw error;
+      }
+    }
+  }
+
+  const finalError = lastError ?? new Error('签到失败：所有轮次均未成功');
+  finalError.rounds = maxRounds;
+  throw finalError;
 }
 
 module.exports = {
   pureBrowserCheckIn,
+  attemptCheckInOnce,
+  shouldBlockUrl,
+  waitForLoginPageRendered,
   handleSliderVerification,
   clickLoginButton,
   checkSignedToday,
