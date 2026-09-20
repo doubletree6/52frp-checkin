@@ -865,8 +865,9 @@ async function checkSignedToday(page, options = {}) {
       return { signed: true, reliable: true, pattern: `上次签到日期: ${today}` };
     }
 
-    // 有日期但不是今天 → 明确未签到，这是硬证据，可以终结判断
-    console.log(`[签到判断] 上次签到日期为 ${lastSignDate}，不是今天 (${today})`);
+    // 有日期但不是今天 → 明确未签到，这是硬证据，直接终结判断（不再看按钮/文案）
+    console.log(`[签到判断] 上次签到日期为 ${lastSignDate}，不是今天 (${today})，判断为未签到（硬证据）`);
+    return { signed: false, reliable: true, pattern: `上次签到日期: ${lastSignDate}` };
   }
 
   // 硬证据 2：页面明确写了「今天已经签到过」
@@ -1626,12 +1627,16 @@ async function attemptCheckInOnce({
     }
 
     if (afterCheck.signed || requestCheck.signed) {
-      // 判定来源优先级：接口响应 > 页面文案。接口才是唯一可信的证据，
-      // 页面上的「签到成功」可能只是没渲染完整时残留的静态文案。
       const signInfo = requestCheck.pattern || afterCheck.pattern;
-      const signKind = resolveSignKind(signInfo);
+      // 「本次运行前就已完成」只能由**接口**认定。页面文案不可信：
+      // 点完按钮后页面显示「已签到」正是本次点击造成的结果，不能反推成之前就签过；
+      // 而页面上的「签到成功」也可能是没渲染完整时残留的静态文案。
+      // 反过来，若接口明确回了「已签到 / 重复签到」，那才是真的早就签过了。
+      const signKind = /已经签到|已签到|重复签到/i.test(String(requestCheck.pattern || '')) ? 'already' : 'success';
       if (signKind === 'already') {
-        console.log(`[签到] 签到请求返回已签到（${signInfo}），按「已签到」上报`);
+        console.log(`[签到] 签到接口明确返回已签到（${signInfo}），按「已签到」上报`);
+      } else {
+        console.log(`[签到] 按「本次运行自动签到成功」上报（判定来源: ${signInfo || '未取到'}）`);
       }
       const template = buildResultTemplate(afterStats, afterDashboardStats, signKind);
 
