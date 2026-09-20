@@ -503,12 +503,12 @@ async function loadDashboardStats(page, dashboardUrl) {
  *   already —— 脚本点签到之前今日签到就已完成（用户手动签的，或当天更早的一次运行签的）
  */
 function buildResultTemplate(signStats, dashboardStats, kind = 'success') {
-  const days = Number.isFinite(signStats?.totalSignDays) ? signStats.totalSignDays : 'x';
+  const days = Number.isFinite(signStats?.totalSignDays) ? signStats.totalSignDays : '未取到';
   const todayReward = Number.isFinite(dashboardStats?.todayRewardBytes) && dashboardStats.todayRewardBytes > 0
     ? formatTrafficCompact(dashboardStats.todayRewardBytes)
-    : 'xM';
-  const totalReward = signStats?.totalRewardText ? signStats.totalRewardText.replace(/B$/, '') : 'xG';
-  const remaining = dashboardStats?.remainingText ? dashboardStats.remainingText.replace(/B$/, '') : 'xG';
+    : '未取到';
+  const totalReward = signStats?.totalRewardText ? signStats.totalRewardText.replace(/B$/, '') : '未取到';
+  const remaining = dashboardStats?.remainingText ? dashboardStats.remainingText.replace(/B$/, '') : '未取到';
 
   const isAlready = kind === 'already';
 
@@ -760,6 +760,38 @@ async function clickLoginButton(page) {
 }
 
 /**
+ * 等待签到页真正渲染出可判定的内容。
+ *
+ * 只等 networkidle + 固定 sleep 是不够的：跨境链路上页面常常只渲染一半，
+ * 此时「上次签到日期」「立即签到按钮」都还没有，后续判定就是在残缺数据上做判断
+ * （2026-09-19 的误报正是这么来的）。这里显式等到二者之一出现为止。
+ */
+async function waitForSignPageReady(page, timeoutMs = 15_000) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    try {
+      const state = await page.evaluate(() => ({
+        text: document.body?.innerText || '',
+        hasSignButton: [...document.querySelectorAll('button')].some((b) =>
+          /立即\s*(?:签到|Check-in)/i.test(String(b.textContent || '').trim())
+        ),
+      }));
+
+      if (/上次(?:签到|Check-in)\s*[:：]?\s*\d/i.test(state.text) || state.hasSignButton) {
+        return { ready: true };
+      }
+    } catch {
+      // 页面正在导航，下一轮再来
+    }
+
+    await sleep(500);
+  }
+
+  return { ready: false };
+}
+
+/**
  * 等待登录成功
  */
 async function waitForLoginSuccess(page, timeoutMs = 30_000) {
@@ -791,13 +823,30 @@ async function waitForLoginSuccess(page, timeoutMs = 30_000) {
 }
 
 /**
- * 检查是否已签到
+ * 检查是否已签到。
+ *
+ * 曾经踩过的坑（2026-09-19）：`successPatterns` 里的「签到成功」是**结果提示**，
+ * 不是**状态证据**。签到页哪怕没签到，页面上也可能出现这四个字（残缺渲染的页面、
+ * 说明文案、历史记录等都会命中）。把它用在「点击前是否已签到」的判断上，
+ * 会让脚本认为今天已签到而跳过点击 —— 结果是推送"已签到"但实际根本没签。
+ *
+ * 因此判定分两级：
+ * - reliable（硬证据）：上次签到日期 == 今天、页面明确写「您今天已经签到过了」、
+ *   接口返回已签到 —— 只有这些能作为「今天已签到」的结论
+ * - 软证据：按钮禁用/不可见、出现「签到成功」等模糊文案 —— 可能只是页面没渲染完，
+ *   不能据此跳过签到，必须继续走点击流程，让签到接口给出最终答案
+ *
+ * @param {Object} [options]
+ * @param {boolean} [options.allowSuccessPatterns=false]
+ *   是否把「签到成功」「恭喜获得」计为已签到。只有**点击签到之后**才应开启。
  */
-async function checkSignedToday(page) {
+async function checkSignedToday(page, options = {}) {
+  const { allowSuccessPatterns = false } = options;
+
   const bodyText = await page.locator('body').innerText().catch(() => '');
   const normalizedBodyText = cleanBodyLine(bodyText);
 
-  // 优先检查上次签到日期是否为今天（最可靠）
+  // 硬证据 1：上次签到日期就是今天（最可靠）
   const today = getTodaySignDate();
   const lastSignMatch = normalizedBodyText.match(/上次(?:签到|Check-in)\s*[:：]?\s*(\d{4}-\d{2}-\d{2}|\d{4}\.\d{2}\.\d{2}|\d{2}-\d{2}|\d{2}\.\d{2})/i);
   if (lastSignMatch) {
@@ -812,12 +861,15 @@ async function checkSignedToday(page) {
       lastSignDate = lastSignDate.replace('.', '-').replace('.', '-');
     }
     if (lastSignDate === today) {
-      console.log(`[签到判断] 上次签到日期为今天 (${today})，判断为已签到`);
-      return { signed: true, pattern: `上次签到日期: ${today}` };
+      console.log(`[签到判断] 上次签到日期为今天 (${today})，判断为已签到（硬证据）`);
+      return { signed: true, reliable: true, pattern: `上次签到日期: ${today}` };
     }
+
+    // 有日期但不是今天 → 明确未签到，这是硬证据，可以终结判断
+    console.log(`[签到判断] 上次签到日期为 ${lastSignDate}，不是今天 (${today})`);
   }
 
-  // 明确文字提示（可靠）
+  // 硬证据 2：页面明确写了「今天已经签到过」
   const explicitPatterns = [
     '您今天已经签到过了',
     '今天已经签到过了',
@@ -826,45 +878,46 @@ async function checkSignedToday(page) {
   ];
   for (const pattern of explicitPatterns) {
     if (normalizedBodyText.includes(pattern)) {
-      return { signed: true, pattern: `页面提示: ${pattern}` };
+      return { signed: true, reliable: true, pattern: `页面提示: ${pattern}` };
     }
   }
 
-  // 签到成功提示（执行后出现）
-  const successPatterns = ['签到成功', '恭喜获得'];
-  for (const pattern of successPatterns) {
-    if (normalizedBodyText.includes(pattern)) {
-      return { signed: true, pattern: `成功提示: ${pattern}` };
+  // 软证据：结果类提示文案。只在点击签到之后才认（allowSuccessPatterns）
+  if (allowSuccessPatterns) {
+    const successPatterns = ['签到成功', '恭喜获得'];
+    for (const pattern of successPatterns) {
+      if (normalizedBodyText.includes(pattern)) {
+        return { signed: true, reliable: false, pattern: `成功提示: ${pattern}` };
+      }
     }
   }
 
-  // 检测签到按钮是否存在且可见（关键判断）
+  // 检测签到按钮是否存在且可见
   const signButton = page.getByRole('button', { name: /立即(?:签到|Check-in)/i });
   const buttonVisible = await signButton.isVisible().catch(() => false);
   const buttonCount = await signButton.count().catch(() => 0);
   const buttonEnabled = buttonCount > 0 ? await signButton.first().isEnabled().catch(() => true) : false;
 
   if (buttonVisible && buttonCount > 0 && buttonEnabled) {
-    // 签到按钮可见 → 未签到
+    // 签到按钮可见且可点 → 未签到（硬证据）
     console.log('[签到判断] 检测到「立即签到」按钮可见，判断为未签到');
-    return { signed: false };
+    return { signed: false, reliable: true };
   }
 
   if (buttonVisible && buttonCount > 0 && !buttonEnabled) {
-    console.log('[签到判断] 签到按钮已禁用，判断为已签到');
-    return { signed: true, pattern: '签到按钮已禁用' };
+    console.log('[签到判断] 签到按钮已禁用，疑似已签到（软证据，仍需接口确认）');
+    return { signed: true, reliable: false, pattern: '签到按钮已禁用' };
   }
 
   // 签到按钮不可见或不存在
-  // 检查是否有替代的「已签到」相关状态文字
   if (normalizedBodyText.includes('已签到') || normalizedBodyText.includes('已经签到') || normalizedBodyText.includes('今日已签')) {
-    console.log('[签到判断] 签到按钮不可见，页面显示已签到状态');
-    return { signed: true, pattern: '按钮不可见且页面显示已签到' };
+    console.log('[签到判断] 签到按钮不可见，页面显示已签到状态（软证据，仍需接口确认）');
+    return { signed: true, reliable: false, pattern: '按钮不可见且页面显示已签到' };
   }
 
-  // 默认：按钮不可见但无明确状态，保守判断为未签到，尝试点击
-  console.log('[签到判断] 签到按钮不可见，无明确已签到提示，保守判断为未签到');
-  return { signed: false };
+  // 按钮不可见且无明确状态：多半是页面还没渲染完，属于「不知道」而非「已签到」
+  console.log('[签到判断] 未取到任何已签到证据（页面可能尚未渲染完整），保守判断为未签到');
+  return { signed: false, reliable: false };
 }
 
 /**
@@ -1094,24 +1147,25 @@ function inferSignStateFromRequest(signRequest) {
   const raw = message || String(signRequest.text || '');
 
   if (/签到失败|失败|稍后重试|错误|error/i.test(raw)) {
-    return { signed: false, pattern: '接口返回失败' };
+    return { signed: false, reliable: true, pattern: '接口返回失败' };
   }
 
   if (/今天已经签到过了|您今天已经签到过了|已签到|已经签到/i.test(raw)) {
-    return { signed: true, pattern: '接口返回已签到' };
+    return { signed: true, reliable: true, pattern: '接口返回已签到' };
   }
 
   if (/签到成功|成功|恭喜/i.test(raw)) {
-    return { signed: true, pattern: '接口返回签到成功' };
+    return { signed: true, reliable: true, pattern: '接口返回签到成功' };
   }
 
   // 如果响应码为 200 且有 data 字段，且无明确失败消息，视为可能成功
-  if (signRequest.status === 200 && json && json.data && !/失败|error|错误|稍后重试/i.test(text)) {
+  // 注意：这里原本误用了未定义的 `text` 变量（应为 raw），会抛 ReferenceError
+  if (signRequest.status === 200 && json && json.data && !/失败|error|错误|稍后重试/i.test(raw)) {
     console.log(`[签到] 检测到 200 + data 字段，视为可能成功`);
-    return { signed: true, pattern: '接口返回 200 且有 data 字段' };
+    return { signed: true, reliable: true, pattern: '接口返回 200 且有 data 字段' };
   }
 
-  return { signed: false };
+  return { signed: false, reliable: false };
 }
 
 /**
@@ -1423,12 +1477,17 @@ async function attemptCheckInOnce({
 
     await page.goto(SIGN_PAGE, { waitUntil: 'domcontentloaded' });
     await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-    await page.waitForTimeout(2000);
+    await waitForSignPageReady(page).then(({ ready }) => {
+      if (!ready) {
+        console.log('[签到] 警告：签到页关键内容未出现，页面可能未渲染完整（判定结果可信度下降）');
+      }
+    });
+    await page.waitForTimeout(1000);
     beforeStats = await extractSignStats(page);
 
     // 检查是否已签到
     const beforeCheck = await checkSignedToday(page);
-    if (beforeCheck.signed) {
+    if (beforeCheck.signed && beforeCheck.reliable) {
       const template = buildResultTemplate(beforeStats, dashboardStats, 'already');
       console.log(`[签到] ${beforeCheck.pattern}`);
       console.log('[签到] 今日签到在本轮运行之前就已存在，按「已签到」上报');
@@ -1448,6 +1507,13 @@ async function attemptCheckInOnce({
       };
     }
 
+    if (beforeCheck.signed) {
+      // 只有软证据（按钮禁用 / 页面出现「签到成功」等模糊文案）——
+      // 很可能是页面没渲染完整，不能据此跳过签到，否则会误报「已签到」而实际漏签。
+      // 继续往下走点击流程，由签到接口给出最终结论。
+      console.log(`[签到] 疑似已签到但证据不足（${beforeCheck.pattern}），不跳过，继续尝试点击签到`);
+    }
+
     // 步骤 5: 点击签到（含重试逻辑，应对 API 返回 "签到失败，请稍后重试"）
     console.log('[5/5] 点击签到按钮...');
     steps.push('click_sign');
@@ -1465,11 +1531,12 @@ async function attemptCheckInOnce({
         // 重新加载签到页获取新的 slider_token
         await page.goto(SIGN_PAGE, { waitUntil: 'domcontentloaded' });
         await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
-        await page.waitForTimeout(2000);
+        await waitForSignPageReady(page).catch(() => ({ ready: false }));
+        await page.waitForTimeout(1000);
         await dismissBlockingOverlays(page);
-        // 重新检查是否已签到
+        // 重新检查是否已签到（同样要求硬证据：上一轮只是点击失败，不等于已签到）
         const retryBeforeCheck = await checkSignedToday(page);
-        if (retryBeforeCheck.signed) {
+        if (retryBeforeCheck.signed && retryBeforeCheck.reliable) {
           console.log(`[签到] 重试时发现已签到: ${retryBeforeCheck.pattern}`);
           afterStats = await extractSignStats(page);
           const retryTemplate = buildResultTemplate(afterStats, dashboardStats, 'already');
@@ -1529,7 +1596,8 @@ async function attemptCheckInOnce({
       signRequest = await signRequestPromise;
       await waitForSignResult(page);
 
-      afterCheck = await checkSignedToday(page);
+      // 点击之后才认可「签到成功」这类结果提示文案（此时它确实是本次操作的结果）
+      afterCheck = await checkSignedToday(page, { allowSuccessPatterns: true });
       requestCheck = inferSignStateFromRequest(signRequest);
       afterStats = await extractSignStats(page);
 
@@ -1558,8 +1626,9 @@ async function attemptCheckInOnce({
     }
 
     if (afterCheck.signed || requestCheck.signed) {
-      const signInfo = afterCheck.pattern || requestCheck.pattern;
-      // 点击后接口回「今天已经签到过了」也算 already：签到不是本次运行完成的
+      // 判定来源优先级：接口响应 > 页面文案。接口才是唯一可信的证据，
+      // 页面上的「签到成功」可能只是没渲染完整时残留的静态文案。
+      const signInfo = requestCheck.pattern || afterCheck.pattern;
       const signKind = resolveSignKind(signInfo);
       if (signKind === 'already') {
         console.log(`[签到] 签到请求返回已签到（${signInfo}），按「已签到」上报`);
@@ -1715,6 +1784,7 @@ module.exports = {
   attemptCheckInOnce,
   shouldBlockUrl,
   waitForLoginPageRendered,
+  waitForSignPageReady,
   handleSliderVerification,
   clickLoginButton,
   checkSignedToday,
