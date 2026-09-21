@@ -3,8 +3,19 @@ name: Daily 52frp Check-in
 on:
   workflow_dispatch:
   schedule:
-    # GitHub Actions cron uses UTC. 03:15 UTC = 11:15 Asia/Shanghai.
+    # GitHub Actions cron 用的是 UTC。
+    #
+    # 主跑：名义 11:15 北京（03:15 UTC）。
+    # 注意：GitHub 对 schedule 有调度延迟，实测主跑通常在北京 15:40-16:50 才真正落地，
+    # 不是名义的 11:15。所以补跑时段必须放在实测窗口之后。
     - cron: '15 3 * * *'
+    # 错峰补跑：名义 18:00 北京（10:00 UTC）。
+    # 只在「当天主跑没有成功」时才真的签到，主跑成功则直接跳过。
+    - cron: '0 10 * * *'
+
+permissions:
+  contents: read
+  actions: read # 闸门要读本 workflow 的 run 历史
 
 jobs:
   checkin:
@@ -19,10 +30,39 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 闸门不依赖 npm 依赖，放在 npm ci 之前，跳过时能省下一次安装。
+      - name: Decide whether this slot should check in
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+          RUN_ID: ${{ github.run_id }}
+          REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set +e
+          node makeup_gate.js >> "$GITHUB_OUTPUT"
+          gate_status=$?
+          set -e
+
+          if [ $gate_status -ne 0 ]; then
+            echo "闸门异常，保守放行" >&2
+            {
+              echo "should_checkin=true"
+              echo "is_makeup=true"
+              echo "reason=闸门异常，保守放行"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
+          echo "should_checkin=${{ steps.gate.outputs.should_checkin }}"
+          echo "is_makeup=${{ steps.gate.outputs.is_makeup }}"
+
       - name: Install dependencies
+        if: steps.gate.outputs.should_checkin == 'true'
         run: npm ci
 
       - name: Start Xvfb (virtual display for headful browser)
+        if: steps.gate.outputs.should_checkin == 'true'
         run: |
           Xvfb :99 -screen 0 1920x1080x24 -ac &
           sleep 2
@@ -30,6 +70,7 @@ jobs:
 
       - name: Run check-in (headful mode via Xvfb)
         id: checkin
+        if: steps.gate.outputs.should_checkin == 'true'
         env:
           FRP_USERNAME: ${{ secrets.FRP_USERNAME }}
           FRP_PASSWORD: ${{ secrets.FRP_PASSWORD }}
@@ -59,15 +100,43 @@ jobs:
           exit $status
 
       - name: Upload debug artifacts
-        if: failure()
+        if: failure() && steps.gate.outputs.should_checkin == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: 52frp-debug-artifacts
           path: debug-artifacts/
           if-no-files-found: ignore
 
+      # 只在真的跑过签到时才推送，避免补跑跳过时重复通知。
       - name: PushPlus notification
-        if: always()
+        if: always() && steps.gate.outputs.should_checkin == 'true'
         env:
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
-        run: node push_notification.js "${{ steps.checkin.outputs.checkin_result }}"
+          CHECKIN_RESULT: ${{ steps.checkin.outputs.checkin_result }}
+          IS_MAKEUP: ${{ steps.gate.outputs.is_makeup }}
+        run: |
+          result="${CHECKIN_RESULT:-}"
+          if [ -z "$result" ]; then
+            result="签到脚本执行完成，但未解析到结果"
+          fi
+
+          if [ "$IS_MAKEUP" = "true" ]; then
+            result="【补跑】$result"
+          fi
+
+          node push_notification.js "$result"
+
+      - name: Summarize the slot
+        if: always()
+        env:
+          SHOULD_CHECKIN: ${{ steps.gate.outputs.should_checkin }}
+          IS_MAKEUP: ${{ steps.gate.outputs.is_makeup }}
+          REASON: ${{ steps.gate.outputs.reason }}
+        run: |
+          {
+            echo "### 本次时段判定"
+            echo ""
+            echo "- 是否签到：\`${SHOULD_CHECKIN:-unknown}\`"
+            echo "- 是否补跑：\`${IS_MAKEUP:-unknown}\`"
+            echo "- 判定原因：${REASON:-无}"
+          } >> "$GITHUB_STEP_SUMMARY"
