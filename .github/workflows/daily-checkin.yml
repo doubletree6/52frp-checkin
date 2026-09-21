@@ -2,6 +2,14 @@ name: Daily 52frp Check-in
 
 on:
   workflow_dispatch:
+    inputs:
+      slot:
+        description: 'auto=直接签到（默认）；makeup=按补跑规则判定（当天主跑已成功则跳过）'
+        type: choice
+        options:
+          - auto
+          - makeup
+        default: auto
   schedule:
     # GitHub Actions cron 用的是 UTC。
     #
@@ -36,26 +44,26 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           SCHEDULE: ${{ github.event.schedule }}
+          SLOT: ${{ github.event.inputs.slot || 'auto' }}
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set +e
-          node makeup_gate.js >> "$GITHUB_OUTPUT"
+          gate_output=$(node makeup_gate.js 2>/tmp/gate.err)
           gate_status=$?
           set -e
 
-          if [ $gate_status -ne 0 ]; then
+          cat /tmp/gate.err >&2 || true
+
+          if [ $gate_status -ne 0 ] || [ -z "$gate_output" ]; then
             echo "闸门异常，保守放行" >&2
-            {
-              echo "should_checkin=true"
-              echo "is_makeup=true"
-              echo "reason=闸门异常，保守放行"
-            } >> "$GITHUB_OUTPUT"
+            gate_output=$(printf 'should_checkin=true\nis_makeup=true\nreason=闸门异常，保守放行')
           fi
 
-          echo "should_checkin=${{ steps.gate.outputs.should_checkin }}"
-          echo "is_makeup=${{ steps.gate.outputs.is_makeup }}"
+          # 同一步骤内拿不到 steps.gate.outputs.*，直接回显捕获到的值。
+          printf '%s\n' "$gate_output"
+          printf '%s\n' "$gate_output" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         if: steps.gate.outputs.should_checkin == 'true'

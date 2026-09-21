@@ -177,3 +177,46 @@ test('unknown cron checks in conservatively rather than silently skipping', () =
 
   assert.equal(d.shouldCheckin, true);
 });
+
+test('manual dispatch with slot=auto checks in directly', () => {
+  const d = decideCheckin({
+    eventName: 'workflow_dispatch',
+    schedule: '',
+    slot: 'auto',
+    runId: '999',
+    today: TODAY,
+    runs: [],
+  });
+
+  assert.equal(d.shouldCheckin, true);
+  assert.equal(d.isMakeup, false);
+});
+
+test('manual dispatch with slot=makeup skips when the main run already succeeded', () => {
+  const d = decideCheckin({
+    eventName: 'workflow_dispatch',
+    schedule: '',
+    slot: 'makeup',
+    runId: '999',
+    today: TODAY,
+    runs: [sameDayRun({ status: 'completed', conclusion: 'success' })],
+  });
+
+  assert.equal(d.shouldCheckin, false);
+  assert.equal(d.isMakeup, true);
+});
+
+test('manual dispatch with slot=makeup runs when today only has failures', () => {
+  const d = decideCheckin({
+    eventName: 'workflow_dispatch',
+    schedule: '',
+    slot: 'makeup',
+    runId: '999',
+    today: TODAY,
+    runs: [sameDayRun({ id: 222, status: 'completed', conclusion: 'failure' })],
+  });
+
+  assert.equal(d.shouldCheckin, true);
+  assert.equal(d.isMakeup, true);
+  assert.match(d.reason, /222/);
+});

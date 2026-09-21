@@ -39,6 +39,7 @@ function beijingDate(input = new Date()) {
  * @param {string} opts.today              北京日期 YYYY-MM-DD
  * @param {Array}  [opts.runs]             该 workflow 最近的 run 列表
  * @param {boolean} [opts.runsFetchFailed] 查询 run 列表是否失败
+ * @param {string} [opts.slot]             手动触发时的 slot 输入（auto/makeup）
  * @returns {{shouldCheckin: boolean, isMakeup: boolean, reason: string}}
  */
 function decideCheckin({
@@ -48,8 +49,17 @@ function decideCheckin({
   today,
   runs,
   runsFetchFailed = false,
+  slot = '',
 }) {
-  if (eventName !== 'schedule') {
+  const isScheduled = eventName === 'schedule';
+  const isManual = eventName === 'workflow_dispatch';
+
+  // 补跑判定有两条入口：定时补跑时段，或手动以 slot=makeup 触发（便于验证）。
+  const isMakeupSlot =
+    (isScheduled && schedule === MAKEUP_SCHEDULE) ||
+    (isManual && slot === 'makeup');
+
+  if (!isScheduled && !isManual) {
     return {
       shouldCheckin: true,
       isMakeup: false,
@@ -57,7 +67,15 @@ function decideCheckin({
     };
   }
 
-  if (schedule === MAIN_SCHEDULE) {
+  if (isManual && !isMakeupSlot) {
+    return {
+      shouldCheckin: true,
+      isMakeup: false,
+      reason: `手动触发（slot=${slot || 'auto'}），直接签到`,
+    };
+  }
+
+  if (isScheduled && schedule === MAIN_SCHEDULE) {
     return {
       shouldCheckin: true,
       isMakeup: false,
@@ -65,7 +83,7 @@ function decideCheckin({
     };
   }
 
-  if (schedule !== MAKEUP_SCHEDULE) {
+  if (isScheduled && !isMakeupSlot) {
     return {
       shouldCheckin: true,
       isMakeup: false,
@@ -147,12 +165,15 @@ async function fetchRuns({ repo, token, workflowFile = WORKFLOW_FILE }) {
 async function main() {
   const eventName = process.env.EVENT_NAME || '';
   const schedule = process.env.SCHEDULE || '';
+  const slot = process.env.SLOT || '';
   const runId = process.env.RUN_ID || '';
   const repo = process.env.REPO || '';
   const token = process.env.GH_TOKEN || '';
   const today = process.env.TODAY || beijingDate();
 
-  const isMakeupSlot = eventName === 'schedule' && schedule === MAKEUP_SCHEDULE;
+  const isMakeupSlot =
+    (eventName === 'schedule' && schedule === MAKEUP_SCHEDULE) ||
+    (eventName === 'workflow_dispatch' && slot === 'makeup');
 
   let runs = null;
   let runsFetchFailed = false;
@@ -181,6 +202,7 @@ async function main() {
     today,
     runs,
     runsFetchFailed,
+    slot,
   });
 
   console.error(decision.reason);
