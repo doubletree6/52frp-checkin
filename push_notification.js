@@ -1,3 +1,14 @@
+// PushPlus 服务端限制标题不超过 100 个字符，超长会整条推送被拒（code:999）。
+const PUSHPLUS_TITLE_MAX = 100;
+
+function buildPushTitle(message) {
+  const title = `Q:${String(message ?? '')}`;
+  if (title.length <= PUSHPLUS_TITLE_MAX) {
+    return title;
+  }
+  return `${title.slice(0, PUSHPLUS_TITLE_MAX - 1)}…`;
+}
+
 async function sendNotification(message) {
   const token = process.env.PUSHPLUS_TOKEN || process.env.token;
 
@@ -14,7 +25,7 @@ async function sendNotification(message) {
     },
     body: JSON.stringify({
       token,
-      title: `Q:${message}`,
+      title: buildPushTitle(message),
       content: message,
     }),
   });
@@ -40,4 +51,5 @@ if (require.main === module) {
 
 module.exports = {
   sendNotification,
+  buildPushTitle,
 };

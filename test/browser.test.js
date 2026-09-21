@@ -259,3 +259,50 @@ test('buildResultTemplate handles missing values with placeholders', () => {
   assert.ok(template.startsWith('x:'));
   assert.ok(template.includes('xM'));
 });
+
+test('clickSignButton refuses to click a non-sign button such as the server-error page Go Home', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <div class="container">
+        <p>Sorry, there was an error on the server</p>
+        <button class="el-button el-button--primary" onclick="window.__goHomeClicked = true">Go Home</button>
+      </div>
+    `);
+
+    const result = await clickSignButton(page);
+
+    assert.equal(result.clicked, false);
+    assert.ok(result.serverError, 'should report the server error page');
+    assert.equal(await page.evaluate(() => window.__goHomeClicked === true), false);
+  });
+});
+
+test('clickSignButton still clicks a real Check-in button on an MT page', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <div class="container">
+        <button class="el-button el-button--primary" onclick="window.__signClicked = true">[MT] 立即Check-in</button>
+      </div>
+    `);
+
+    const result = await clickSignButton(page);
+
+    assert.equal(result.clicked, true);
+    assert.equal(await page.evaluate(() => window.__signClicked === true), true);
+  });
+});
+
+test('clickSignButton reports no server error on a normal sign page', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <div class="container">
+        <button class="el-button el-button--primary" onclick="window.__signClicked2 = true">立即签到</button>
+      </div>
+    `);
+
+    const result = await clickSignButton(page);
+
+    assert.equal(result.clicked, true);
+    assert.equal(result.serverError, undefined);
+  });
+});

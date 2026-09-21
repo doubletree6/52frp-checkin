@@ -42,3 +42,19 @@ test('getCredentials keeps existing shell env values over .env', () => {
   assert.equal(env.FRP_USERNAME, 'shell-user');
   assert.equal(env.FRP_PASSWORD, 'shell-pass');
 });
+
+test('buildPushTitle keeps short titles unchanged', () => {
+  const { buildPushTitle } = require('../push_notification');
+  assert.equal(buildPushTitle('6:228M;1.76G;101.12G'), 'Q:6:228M;1.76G;101.12G');
+});
+
+test('buildPushTitle truncates titles over the PushPlus 100-char limit', () => {
+  const { buildPushTitle } = require('../push_notification');
+  const long = `error:登录页 Vue 应用未渲染，已重试 4 次（JS 错误: Failed to load resource: the server responded with a status of 522 ()）`;
+
+  const title = buildPushTitle(long);
+
+  assert.ok(title.length <= 100, `title length ${title.length} should be <= 100`);
+  assert.ok(title.startsWith('Q:error:'));
+  assert.ok(title.endsWith('…'));
+});
