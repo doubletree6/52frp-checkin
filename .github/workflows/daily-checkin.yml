@@ -2,6 +2,17 @@ name: Daily 52frp Check-in
 
 on:
   workflow_dispatch:
+    inputs:
+      strategy:
+        description: 签到方式顺序
+        required: false
+        default: auto
+        type: choice
+        options:
+          - auto
+          - api
+          - browser
+          - browser,api
   schedule:
     # 每日签到: UTC 03:15 = 北京时间 11:15
     - cron: '15 3 * * *'
@@ -38,9 +49,11 @@ jobs:
           FRP_BROWSER_HEADLESS: 'false'
           FRP_BROWSER_CHANNEL: chromium
           FRP_DEBUG_DIR: debug-artifacts
+          # auto = 方法A(纯API) 优先，失败回退方法B(浏览器)；手动运行时可覆盖
+          CHECKIN_STRATEGY: ${{ github.event.inputs.strategy || 'auto' }}
         run: |
           set +e
-          output=$(node checkin.js 2>&1)
+          output=$(node checkin-v2.js 2>&1)
           status=$?
           set -e
           echo "$output"
