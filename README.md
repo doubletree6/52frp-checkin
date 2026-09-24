@@ -74,20 +74,24 @@ GET  https://www.52frp.com/api/user/sign/info  复查（唯一可信的成功判
 - `FRP_USERNAME`
 - `FRP_PASSWORD`
 
-如果你想收到微信推送，再加：
+推送渠道**至少要配一个**，否则签到了也不知道结果。两个渠道可以同时配置，
+脚本会同时发送同一条内容；未配置的渠道会自动跳过。
 
-- `PUSHPLUS_TOKEN`
+**渠道一：PushPlus**（可转发到微信 / 企业微信 / 邮件 / Webhook 等）
 
-如果需要指定 PushPlus 发送渠道，在仓库 `Settings` → `Secrets and variables` → `Actions` → `Secrets` 中添加：
+- `PUSHPLUS_TOKEN` —— 必配，否则该渠道跳过
+- `PUSHPLUS_CHANNEL` —— 可选，发送渠道，例如 `wechat`、`webhook`、`mail`；
+  不填则按 PushPlus 后台的默认渠道发送
 
-- `PUSHPLUS_CHANNEL`
+**渠道二：Telegram**
 
-如果需要同时接收 Telegram 推送，在同一个 `Actions` → `Secrets` 中添加：
+- `TG_BOT_TOKEN` —— Telegram Bot token（找 @BotFather 创建机器人获得）
+- `TG_CHAT_ID` —— 接收消息的 chat ID（可通过 @userinfobot 查询自己的 ID）
 
-- `TG_BOT_TOKEN`
-- `TG_CHAT_ID`
+这两个必须**同时**配置，缺任意一个 Telegram 渠道就跳过。
 
-PushPlus 和 Telegram 会同时发送同一条签到内容；未配置的渠道会自动跳过。
+> 微信本身不提供个人消息接口，所以「推送到微信」走的是 PushPlus 这类第三方转发服务：
+> 在 pushplus.plus 用微信扫码登录拿到 token，再由它把消息转发到你的微信服务号。
 
 ### 3. 启用 GitHub Actions
 
