@@ -992,6 +992,25 @@ async function dismissBlockingOverlays(page) {
 }
 
 /**
+ * 检测 52frp 上游 5xx（Cloudflare 522/525 等）渲染出的服务端错误页。
+ *
+ * 这类页面只有 “Sorry, there was an error on the server” + “Go Home”，
+ * 没有任何签到按钮；此前 fallback 策略会误点到 “Go Home”，
+ * 导致日志显示“已点击签到按钮”却根本不是在签到。
+ */
+async function detectServerErrorPage(page) {
+  const bodyText = await page.locator('body').innerText().catch(() => '');
+  const normalized = cleanBodyLine(bodyText);
+
+  const match = normalized.match(/Sorry, there was an error on the server[\s\S]*/i);
+  if (match) {
+    return match[0].slice(0, 200);
+  }
+
+  return null;
+}
+
+/**
  * 查找并点击签到按钮
  */
 async function clickSignButton(page) {
@@ -1000,22 +1019,39 @@ async function clickSignButton(page) {
   // 先关闭可能阻挡点击的遮罩层
   await dismissBlockingOverlays(page);
 
+  // 上游 5xx 错误页没有任何签到按钮，直接放弃，避免误点 “Go Home”
+  const serverError = await detectServerErrorPage(page);
+  if (serverError) {
+    console.log(`[签到] 检测到服务端错误页: ${serverError}`);
+    return { clicked: false, serverError };
+  }
+
   // 多种方式查找按钮
+  // 站点文案会中英混排（[MT] 立即Check-in），所以一律用正则而不是字面量
+  const signTextPattern = /(?:立即)?\s*(?:签到|Check-in)/i;
   const strategies = [
-    { name: 'role按钮', locator: page.getByRole('button', { name: '立即签到' }) },
-    { name: '文本过滤', locator: page.locator('button').filter({ hasText: '立即签到' }) },
-    { name: 'primary按钮', locator: page.locator('button.el-button--primary').first() },
+    { name: 'role按钮', locator: page.getByRole('button', { name: /立即(?:签到|Check-in)/i }) },
+    { name: '文本过滤', locator: page.locator('button').filter({ hasText: /立即(?:签到|Check-in)/i }) },
+    { name: 'primary按钮', locator: page.locator('button.el-button--primary') },
     { name: 'sign类按钮', locator: page.locator('button[class*="sign"]') },
-    { name: '任意签到文本', locator: page.locator('button, [role="button"]').filter({ hasText: '签到' }) },
+    { name: '任意签到文本', locator: page.locator('button, [role="button"]') },
   ];
 
   for (const strategy of strategies) {
     try {
       const count = await strategy.locator.count();
-      if (count > 0) {
-        const button = strategy.locator.first();
+      for (let index = 0; index < count; index++) {
+        const button = strategy.locator.nth(index);
         const text = await button.innerText().catch(() => '');
-        console.log(`[签到] 找到按钮 (${strategy.name}): "${text.trim()}"`);
+        const trimmed = text.trim();
+
+        // 兜底策略会命中页面上任意 primary 按钮（如错误页的 “Go Home”），
+        // 必须带签到字样才允许点击。
+        if (!signTextPattern.test(trimmed)) {
+          continue;
+        }
+
+        console.log(`[签到] 找到按钮 (${strategy.name}): "${trimmed}"`);
 
         // 尝试多种点击方式，优先使用 Playwright 真实指针点击。
         // 52frp 的签到会依赖页面先获取 slider-token，再由真实按钮事件提交。
@@ -1063,7 +1099,7 @@ async function clickSignButton(page) {
           }
         }
 
-        return { clicked, buttonText: text.trim() };
+        return { clicked, buttonText: trimmed };
       }
     } catch (e) {
       console.log(`[签到] 策略 ${strategy.name} 失败: ${e.message}`);
@@ -1455,13 +1491,37 @@ async function attemptCheckInOnce({
     }
 
     // 等待登录成功
-    loginSuccess = await waitForLoginSuccess(page, 20_000);
+    loginSuccess = await waitForLoginSuccess(page, 25_000);
+
+    // 登录页是 Vue SPA，滑块通过后的二次点击在 CI 上偶发不跳转。
+    // 这跟账号密码无关，页内重新提交一次通常就过去了；
+    // 直接判成凭证错误会连带取消后面的重试轮次，代价太大。
+    for (let attempt = 1; attempt <= 2 && !loginSuccess; attempt++) {
+      if (!page.url().includes('/auth/login')) break;
+
+      console.log(`[登录] 仍在登录页，重新提交登录 (${attempt}/2)...`);
+      await page.waitForTimeout(2000);
+      await dismissBlockingOverlays(page);
+
+      const reClick = await clickLoginButton(page);
+      if (!reClick.clicked) {
+        console.log('[登录] 重试时未找到登录按钮');
+        break;
+      }
+
+      await page.waitForTimeout(1500);
+      const retrySlider = await handleSliderVerification(page, 20_000);
+      if (retrySlider.handled && retrySlider.success) {
+        await clickLoginButton(page).catch(() => {});
+      }
+
+      loginSuccess = await waitForLoginSuccess(page, 20_000);
+    }
 
     if (!loginSuccess) {
-      // 检查是否仍在登录页
+      // 页内重试也没用，才认为是凭证问题；重试多少次都没意义，直接终止
       const currentUrl = page.url();
       if (currentUrl.includes('/auth/login')) {
-        // 凭证问题重试多少次都没用，直接终止，省下后面的时间
         const err = new Error('登录失败：可能账号密码错误或滑块验证未通过');
         err.retryable = false;
         err.kind = 'credentials';
@@ -1562,6 +1622,11 @@ async function attemptCheckInOnce({
       const clickResult = await clickSignButton(page);
 
       if (!clickResult.clicked) {
+        // 上游 5xx 错误页：页内重试无意义，直接给出明确原因，交给外层换一轮重试
+        if (clickResult.serverError) {
+          throw new Error(`签到页服务端错误（上游 5xx）：${clickResult.serverError}`);
+        }
+
         if (signRetries + 1 < MAX_SIGN_RETRIES) {
           console.log('[签到] 未找到签到按钮，将重试...');
           signRetries++;
@@ -1794,6 +1859,7 @@ module.exports = {
   clickLoginButton,
   checkSignedToday,
   clickSignButton,
+  detectServerErrorPage,
   dismissBlockingOverlays,
   extractDashboardStats,
   extractSignStats,

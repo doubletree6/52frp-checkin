@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { chromium } = require('playwright');
-const { clickSignButton, clickLoginButton, checkSignedToday, inferSignStateFromRequest, extractSignStats, extractDashboardStats, buildResultTemplate, trafficTextToBytes, formatTrafficCompact, isLoginPageRenderedText } = require('../src/browser');
+const { clickSignButton, clickLoginButton, checkSignedToday, inferSignStateFromRequest, extractSignStats, extractDashboardStats, buildResultTemplate, trafficTextToBytes, formatTrafficCompact, isLoginPageRenderedText, detectServerErrorPage } = require('../src/browser');
 
 async function withPage(fn) {
   const browser = await chromium.launch({ headless: true });
@@ -377,6 +377,75 @@ test('checkSignedToday marks explicit already-signed copy as reliable evidence',
 
     assert.equal(result.signed, true);
     assert.equal(result.reliable, true);
+  });
+});
+
+// ---- 以下为 2026-09-24 从上游移植的修复的回归测试 ----
+
+test('detectServerErrorPage recognizes the Cloudflare 5xx error page', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <body>
+        <h1>Sorry, there was an error on the server</h1>
+        <p>Please try again later.</p>
+      </body>
+    `);
+
+    const error = await detectServerErrorPage(page);
+
+    assert.ok(error);
+    assert.match(error, /Sorry, there was an error on the server/i);
+  });
+});
+
+test('detectServerErrorPage returns null on a normal page', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`<body><h1>签到</h1><button>立即签到</button></body>`);
+
+    assert.equal(await detectServerErrorPage(page), null);
+  });
+});
+
+test('clickSignButton refuses to click "Go Home" on a server error page', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <body>
+        <h1>Sorry, there was an error on the server</h1>
+        <button class="el-button el-button--primary" onclick="window.__goHome = true">Go Home</button>
+      </body>
+    `);
+
+    const result = await clickSignButton(page);
+
+    assert.equal(result.clicked, false);
+    assert.ok(result.serverError);
+    assert.equal(await page.evaluate(() => window.__goHome === true), false);
+  });
+});
+
+test('clickSignButton skips primary buttons without sign-in wording', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <button class="el-button el-button--primary" onclick="window.__wrong = true">刷新页面</button>
+    `);
+
+    const result = await clickSignButton(page);
+
+    assert.equal(result.clicked, false);
+    assert.equal(await page.evaluate(() => window.__wrong === true), false);
+  });
+});
+
+test('clickSignButton still clicks the mixed-language "[MT] 立即Check-in" button', async () => {
+  await withPage(async (page) => {
+    await page.setContent(`
+      <button class="el-button el-button--primary" onclick="window.__signClicked = true">[MT] 立即Check-in</button>
+    `);
+
+    const result = await clickSignButton(page);
+
+    assert.equal(result.clicked, true);
+    assert.equal(await page.evaluate(() => window.__signClicked === true), true);
   });
 });
 
